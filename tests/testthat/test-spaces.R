@@ -1,0 +1,12 @@
+test_that("space constructors", {
+  b <- space_box(-1, 1, shape = c(2, 3))
+  expect_s3_class(b, "rl_space_box")
+  expect_length(b$low, 6)
+  expect_equal(space_size(b), 6L)
+  expect_equal(space_size(space_discrete(12)), 1L)
+  expect_equal(space_size(space_multi_discrete(c(3, 4))), 2L)
+  d <- space_dict(pos = space_box(0, 1, 2), act = space_discrete(4))
+  expect_equal(space_size(d), 3L)
+  expect_error(space_dict(space_discrete(2)), "named")
+  expect_match(format(space_discrete(12)), "Discrete\\(12\\)")
+})

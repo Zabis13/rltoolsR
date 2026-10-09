@@ -1,0 +1,35 @@
+Package: rltoolsR
+Type: Package
+Title: Reinforcement Learning Toolkit with 'ggmlR' Backend
+Version: 0.1.1
+Authors@R: c(
+    person("Yuri", "Baramykov", email = "lbsbmsu@mail.ru", role = c("aut", "cre"),
+           comment = c(ORCID = "0009-0000-7627-4217")),
+    person("Jonas", "Eschmann", role = "cph",
+           comment = "Author of the 'RLtools' library included in inst/include/"))
+Description: Provides a reinforcement learning toolkit for R with a unified
+    environment interface and Gymnasium-style action and observation
+    spaces. Environments include continuous control tasks from the
+    header-only 'RLtools' C++ library (Eschmann et al., 2024)
+    <doi:10.48550/arXiv.2306.03530> and a batched tic-tac-toe environment.
+    Implements proximal policy optimization (PPO) for discrete and
+    continuous actions within a generic training loop that accepts
+    user-defined algorithms. Neural networks are trained
+    with 'ggmlR', with 'Vulkan' GPU acceleration and a transparent CPU
+    fallback.
+License: MIT + file LICENSE
+URL: https://github.com/Zabis13/rltoolsR
+BugReports: https://github.com/Zabis13/rltoolsR/issues
+Encoding: UTF-8
+Imports:
+    stats,
+    utils
+Depends:
+    R (>= 4.1.0),
+    ggmlR (>= 0.8.7)
+LinkingTo: ggmlR
+SystemRequirements: C++17, GNU make
+Suggests:
+    testthat (>= 3.0.0)
+RoxygenNote: 7.3.3
+Config/testthat/edition: 3

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# Cleanup script for rltoolsR package
+# Removes compiled objects, shared libraries, and build artifacts.
+# src/Makevars and src/Makevars.win are static (no configure) and are kept.
+
+find src -type f \( -name '*.o' -o -name '*.so' -o -name '*.dll' -o -name '*.dylib' -o -name '*.a' \) -delete
+
+# Remove build artifacts
+rm -f src/symbols.rds
+
+# Remove R CMD check directories
+rm -rf ..Rcheck
+rm -rf rltoolsR.Rcheck

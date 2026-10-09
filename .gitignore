@@ -1,0 +1,17 @@
+# R
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj
+
+# Package build artifacts
+src/Makevars
+src/Makevars.win
+*.o
+*.so
+*.dll
+AV1R.Rcheck/
+
+# Personal notes
+TODO.md
+CLAUDE.md
