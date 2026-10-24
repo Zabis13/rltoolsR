@@ -185,7 +185,13 @@ rl_train <- function(env, algo, total_steps, device = c("auto", "gpu", "cpu"),
     evals <- df_rows(ts$eval)
   }
   t0 <- proc.time()[["elapsed"]]
-  elapsed <- function() t_offset + proc.time()[["elapsed"]] - t0
+  # proc.time() elapsed is wall-clock time and can step back (NTP on CI
+  # machines); clamp it so logged and checkpointed times never decrease
+  t_last <- t_offset
+  elapsed <- function() {
+    t_last <<- max(t_last, t_offset + proc.time()[["elapsed"]] - t0)
+    t_last
+  }
   finish <- function() finish_model(algo, state, history, evals, steps, it, elapsed(), streams)
   if (!is.null(ck) && steps >= total_steps) {
     message("rl_train(): the checkpoint already reached total_steps (", steps,

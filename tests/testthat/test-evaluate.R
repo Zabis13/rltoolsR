@@ -46,6 +46,83 @@ test_that("greedy results do not depend on n_envs", {
   }
 })
 
+test_that("sampled results do not depend on n_envs", {
+  # CPU model: batches of different sizes give the same forward, so the
+  # sampled actions, and with them the episodes, match exactly
+  run <- function(n_envs) attr(rl_evaluate(eval_model(), "pendulum", n_episodes = 10,
+                                           max_steps = 20, greedy = FALSE,
+                                           n_envs = n_envs), "episodes")
+  e1 <- run(1)
+  for (n_envs in c(3, 8)) {
+    e <- run(n_envs)
+    expect_equal(e$return, e1$return, tolerance = 1e-6)
+    expect_identical(e$length, e1$length)
+  }
+  # and sampling does change the episodes compared with the greedy policy
+  g <- attr(rl_evaluate(eval_model(), "pendulum", n_episodes = 10, max_steps = 20),
+            "episodes")
+  expect_false(isTRUE(all.equal(g$return, e1$return)))
+})
+
+test_that("sampled results follow the seed", {
+  run <- function(seed) attr(rl_evaluate(eval_model(), "pendulum", n_episodes = 4,
+                                         max_steps = 20, greedy = FALSE, seed = seed),
+                             "episodes")$return
+  a <- run(7)
+  expect_identical(run(7), a)
+  expect_false(isTRUE(all.equal(run(8), a)))
+})
+
+test_that("sampling leaves the caller's RNG as it was", {
+  m <- eval_model()
+  ev <- function(seed) rl_evaluate(m, "pendulum", n_episodes = 3, max_steps = 5,
+                                   greedy = FALSE, seed = seed)
+  kind <- RNGkind()
+  set.seed(5)
+  before <- .Random.seed
+  ev(7)
+  expect_identical(.Random.seed, before)
+  expect_identical(RNGkind(), kind)
+
+  # seed = NULL: the streams take one draw from the caller's RNG, nothing else
+  set.seed(5)
+  ev(NULL)
+  after <- .Random.seed
+  set.seed(5)
+  sample.int(.Machine$integer.max, 1L)
+  expect_identical(after, .Random.seed)
+
+  # no .Random.seed before the call: none after it
+  rm(".Random.seed", envir = globalenv())
+  ev(7)
+  expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+  expect_identical(RNGkind(), kind)
+  set.seed(NULL)
+})
+
+test_that("a slot samples the same action whatever batch it is in", {
+  restore <- rltoolsR:::rng_snapshot()
+  on.exit(restore(), add = TRUE)
+  st <- rltoolsR:::slot_streams(11, 3)
+  set.seed(1)
+  x <- matrix(rnorm(12), 4, 3)
+  batch <- rltoolsR:::sample_slots(list(logits = x), st, 1:3)
+  mu <- matrix(rnorm(6), 2, 3)
+  box <- rltoolsR:::sample_slots(list(mu = mu, log_std = c(-1, 0)), st, 1:3)
+  for (j in 1:3) {
+    one <- rltoolsR:::sample_slots(list(logits = x[, j, drop = FALSE]), st[j], 1L)
+    expect_identical(one$act, batch$act[j])
+    expect_identical(one$streams, batch$streams[j])
+    one <- rltoolsR:::sample_slots(list(mu = mu[, j, drop = FALSE], log_std = c(-1, 0)),
+                                   st[j], 1L)
+    expect_identical(one$act[, 1], box$act[, j])
+  }
+  # a slot that is not live keeps its stream and gets the greedy action
+  part <- rltoolsR:::sample_slots(list(logits = x), st[c(1, 3)], c(1L, 3L))
+  expect_identical(part$act[c(1, 3)], batch$act[c(1, 3)])
+  expect_identical(part$act[2], max.col(t(x), ties.method = "first")[2] - 1L)
+})
+
 test_that("the same seed reproduces the evaluation, another seed changes it", {
   run <- function(seed) rl_evaluate(eval_model(), "pendulum", n_episodes = 5,
                                     max_steps = 20, seed = seed)

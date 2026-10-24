@@ -12,6 +12,7 @@
 # Results are saved to /tmp/profile_ppo_<device>.rds.
 
 library(rltoolsR)
+library(ggmlR)
 
 args <- commandArgs(trailingOnly = TRUE)
 dev <- if (length(args) >= 1) args[1] else "gpu"

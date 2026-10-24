@@ -39,6 +39,51 @@ for (nm in names(envs)) {
 
     expect_error(rl_step(env, rep(0, e$act + 1)), "length")
   })
+
+  test_that(paste(nm, "step fields, legal actions and episode end"), {
+    env <- rl_env(nm, seed = 1)
+    expect_null(rl_legal_actions(env))
+    rl_reset(env, seed = 3)
+    a <- rep(0.1, e$act)
+    for (i in seq_len(e$max_steps)) {
+      r <- rl_step(env, a)
+      expect_true(is.numeric(r$reward) && length(r$reward) == 1L)
+      expect_true(is.logical(r$terminated) && length(r$terminated) == 1L)
+      expect_true(is.logical(r$truncated) && length(r$truncated) == 1L)
+      if (r$terminated || r$truncated) break
+    }
+    # an episode ends by max_steps; truncation only at the limit itself
+    expect_true(r$terminated || r$truncated)
+    expect_equal(r$truncated, !r$terminated && i == e$max_steps)
+  })
+
+  test_that(paste(nm, "same seed and actions give the same trajectory"), {
+    run <- function() {
+      env <- rl_env(nm, seed = 1)
+      rl_reset(env, seed = 5)
+      acts <- seq(-1, 1, length.out = 20)
+      lapply(acts, function(x) rl_step(env, rep(x, e$act)))
+    }
+    expect_equal(run(), run())
+  })
+
+  test_that(paste(nm, "vec env matches single envs step by step"), {
+    venv <- rl_vec_env(nm, n = 3, seed = 1)
+    singles <- lapply(0:2, function(i) rl_env(nm, seed = 1 + i))
+    o <- rl_reset(venv, seed = 1)
+    for (i in 1:3) expect_equal(o[i, ], rl_reset(singles[[i]], seed = i))
+    a <- matrix(c(-0.5, 0, 0.5), 3, e$act)
+    for (t in 1:5) {
+      r <- rl_step(venv, if (e$act == 1L) a[, 1] else a)
+      for (i in 1:3) {
+        ri <- rl_step(singles[[i]], a[i, ])
+        expect_equal(r$obs[i, ], ri$obs)
+        expect_equal(r$reward[i], ri$reward)
+        expect_equal(r$terminated[i], ri$terminated)
+        expect_equal(r$truncated[i], ri$truncated)
+      }
+    }
+  })
 }
 
 test_that("acrobot classic gives -1 per step", {

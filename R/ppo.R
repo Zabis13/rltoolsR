@@ -101,26 +101,45 @@ host_logp <- function(logits, legal) {
 #' rl_act(m, obs, rl_legal_actions(g))
 #' }
 rl_act <- function(model, obs, legal = NULL, greedy = TRUE) {
+  with_policy_modes(model, {
+    d <- policy_dist(model, obs, legal)
+    if (identical(model$meta$action_type, "box")) {
+      a <- if (greedy) d$mu else as.matrix(ag_sample_normal(d$mu, d$log_std))
+      clip_to_space(a, model$meta$action_space)
+    } else {
+      # greedy: argmax of the masked logits (log-softmax does not move it),
+      # ties -> first; sampling: Gumbel-max
+      if (greedy) ag_argmax(d$logits) else ag_sample_categorical(d$logits)
+    }
+  })
+}
+
+# Evaluates `expr` on the model's device in the GPU modes of training (see
+# rl_train): one fused graph for the forward (16 -> 2 launches per call,
+# measured), and f32-tile matmuls so batch 1 and a batch of more than 8
+# observations pick the same action. The caller's device and modes come back
+# on exit.
+with_policy_modes <- function(model, expr) {
   prev <- ag_device(model$device)
   on.exit(ag_device(prev), add = TRUE)
-  # same GPU modes as in training (see rl_train): one fused graph for the
-  # forward (16 -> 2 launches per call, measured), and f32-tile matmuls so
-  # batch 1 and a batch of more than 8 observations pick the same action
   ag_local_mode(graph = TRUE, matmul_precision = "f32")
+  expr
+}
+
+# The policy's action distribution for `obs` (one row per observation) as host
+# matrices with one column per observation: `mu` [act_dim, B] and `log_std`
+# for box actions, masked `logits` [n_actions, B] for discrete ones. The one
+# source of these for rl_act() and rl_evaluate(), so their sampling cannot
+# drift apart. Call it inside with_policy_modes().
+policy_dist <- function(model, obs, legal = NULL) {
   meta <- model$meta
   norm <- if (isTRUE(meta$normalize_obs)) meta$obs_norm
   # one captured launch; the outputs come back as small matrices, and the
   # action is picked from them on the host
   out <- policy_forward(model$net, t(obs), norm)
-  if (identical(meta$action_type, "box")) {
-    a <- if (greedy) out$mu else as.matrix(ag_sample_normal(out$mu, out$log_std))
-    return(clip_to_space(a, meta$action_space))
-  }
+  if (identical(meta$action_type, "box")) return(list(mu = out$mu, log_std = out$log_std))
   if (is.null(legal)) legal <- matrix(TRUE, nrow(obs), meta$n_actions)
-  masked <- out$logits + PPO_MASK * (1 - t(legal) * 1)
-  # greedy: argmax of the masked logits (log-softmax does not move it), ties ->
-  # first; sampling: Gumbel-max
-  if (greedy) ag_argmax(masked) else ag_sample_categorical(masked)
+  list(logits = out$logits + PPO_MASK * (1 - t(legal) * 1))
 }
 
 #' @rdname rl_act
@@ -160,7 +179,9 @@ rl_ppo_act <- rl_act
 #' @param n_steps Steps collected per environment copy per iteration.
 #' @param epochs PPO epochs per iteration.
 #' @param minibatch Minibatch size.
-#' @param lr Adam learning rate.
+#' @param lr Adam learning rate. On the GPU Adam keeps its constants in float32, so the
+#'   effective second-moment decay is `beta2 = 0.999` rounded to float32,
+#'   0.99900001287.
 #' @param gamma,lambda Discount and GAE parameters.
 #' @param clip PPO clip range.
 #' @param vf_coef,ent_coef Value-loss and entropy coefficients.

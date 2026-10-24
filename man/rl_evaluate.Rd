@@ -35,8 +35,11 @@ likely action), `FALSE` to sample actions.}
 seeds `seed` to `seed + n_episodes - 1`, the same initial states at
 every evaluation. Keep this range apart from the training seeds (a
 training `rl_vec_env` with seed `s` and `n` copies uses `s` to
-`s + n - 1`). `NULL` continues the environment RNG streams: a
-non-reproducible mode with different initial states at every call.}
+`s + n - 1`). The sampling streams of `greedy = FALSE` are derived from
+`seed` too. `NULL` continues the environment RNG streams: a
+non-reproducible mode with different initial states at every call; with
+`greedy = FALSE` the sampling streams are then drawn from R's RNG, so
+[set.seed()] before the call reproduces the sampled actions.}
 
 \item{n_envs}{Copies stepped together when `env` is a name. Ignored for an
 environment object, which uses its own number of copies.}
@@ -61,11 +64,17 @@ episode, from reset to its end: copies that finish early keep stepping
 (one batch, one forward pass) but their rewards and steps after the first
 episode are not counted, and a batch stops as soon as all its episodes
 have ended. Every copy has its own RNG, so an autoreset of one copy does
-not change the episodes of the others. With `greedy = TRUE` the result
-therefore does not depend on `n_envs`, and short episodes are not
-over-represented. With `greedy = FALSE` actions are sampled from R's RNG
-for the whole batch, so the sampled actions do depend on `n_envs`:
-reproducibility is guaranteed only for `greedy = TRUE`.
+not change the episodes of the others. The result therefore does not
+depend on `n_envs`, and short episodes are not over-represented.
+
+With `greedy = FALSE` every episode also samples its actions from its own
+RNG stream (L'Ecuyer-CMRG, independent streams from
+[parallel::nextRNGStream()]), advanced only while the episode runs, so the
+sampled episodes do not depend on `n_envs` either. The forward pass stays
+one per step for the whole batch. The caller's RNG state (kind and
+`.Random.seed`) is left as it was. On the GPU, batches of different sizes
+can differ in the last float32 digit, which may flip a sampled action that
+lies on a boundary; on the CPU the results match exactly.
 
 An episode ends when it is terminated, or truncated by the step limit of
 the environment or by `max_steps`. Truncated episodes count with the

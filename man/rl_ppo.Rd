@@ -31,7 +31,9 @@ rl_ppo(
 
 \item{minibatch}{Minibatch size.}
 
-\item{lr}{Adam learning rate.}
+\item{lr}{Adam learning rate. On the GPU Adam keeps its constants in float32, so the
+effective second-moment decay is `beta2 = 0.999` rounded to float32,
+0.99900001287.}
 
 \item{gamma, lambda}{Discount and GAE parameters.}
 

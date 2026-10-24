@@ -17,11 +17,17 @@
 #' (one batch, one forward pass) but their rewards and steps after the first
 #' episode are not counted, and a batch stops as soon as all its episodes
 #' have ended. Every copy has its own RNG, so an autoreset of one copy does
-#' not change the episodes of the others. With `greedy = TRUE` the result
-#' therefore does not depend on `n_envs`, and short episodes are not
-#' over-represented. With `greedy = FALSE` actions are sampled from R's RNG
-#' for the whole batch, so the sampled actions do depend on `n_envs`:
-#' reproducibility is guaranteed only for `greedy = TRUE`.
+#' not change the episodes of the others. The result therefore does not
+#' depend on `n_envs`, and short episodes are not over-represented.
+#'
+#' With `greedy = FALSE` every episode also samples its actions from its own
+#' RNG stream (L'Ecuyer-CMRG, independent streams from
+#' [parallel::nextRNGStream()]), advanced only while the episode runs, so the
+#' sampled episodes do not depend on `n_envs` either. The forward pass stays
+#' one per step for the whole batch. The caller's RNG state (kind and
+#' `.Random.seed`) is left as it was. On the GPU, batches of different sizes
+#' can differ in the last float32 digit, which may flip a sampled action that
+#' lies on a boundary; on the CPU the results match exactly.
 #'
 #' An episode ends when it is terminated, or truncated by the step limit of
 #' the environment or by `max_steps`. Truncated episodes count with the
@@ -45,8 +51,11 @@
 #'   seeds `seed` to `seed + n_episodes - 1`, the same initial states at
 #'   every evaluation. Keep this range apart from the training seeds (a
 #'   training `rl_vec_env` with seed `s` and `n` copies uses `s` to
-#'   `s + n - 1`). `NULL` continues the environment RNG streams: a
-#'   non-reproducible mode with different initial states at every call.
+#'   `s + n - 1`). The sampling streams of `greedy = FALSE` are derived from
+#'   `seed` too. `NULL` continues the environment RNG streams: a
+#'   non-reproducible mode with different initial states at every call; with
+#'   `greedy = FALSE` the sampling streams are then drawn from R's RNG, so
+#'   [set.seed()] before the call reproduces the sampled actions.
 #' @param n_envs Copies stepped together when `env` is a name. Ignored for an
 #'   environment object, which uses its own number of copies.
 #' @return Named numeric vector `return_mean`, `return_std`, `length_mean`,
@@ -85,6 +94,14 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
     stop("rl_evaluate(): the environment has no step limit, set `max_steps`", call. = FALSE)
   discrete <- !identical(model$meta$action_type, "box")
 
+  if (!greedy) {
+    # seed = NULL: the streams follow the caller's RNG, drawn before it is saved
+    base <- if (is.null(seed)) sample.int(.Machine$integer.max, 1L) else seed
+    restore <- rng_snapshot()
+    on.exit(restore(), add = TRUE)
+    streams <- slot_streams(base, n_episodes)
+  }
+
   ret <- numeric(n_episodes)
   len <- integer(n_episodes)
   trunc <- logical(n_episodes)
@@ -100,8 +117,19 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
     while (!all(done) && t < max_steps) {
       t <- t + 1L
       legal <- if (discrete) rl_legal_actions(env)
-      res <- rl_step(env, rl_act(model, obs, legal, greedy))
       live <- !done
+      act <- if (greedy) {
+        rl_act(model, obs, legal, greedy = TRUE)
+      } else {
+        # one batched forward, then each live slot samples on the host
+        slots <- which(live)
+        ep <- start - 1L + slots
+        d <- with_policy_modes(model, policy_dist(model, obs, legal))
+        s <- sample_slots(d, streams[ep], slots)
+        streams[ep] <- s$streams
+        if (discrete) s$act else clip_to_space(s$act, model$meta$action_space)
+      }
+      res <- rl_step(env, act)
       r_b[live] <- r_b[live] + res$reward[live]
       l_b[live] <- l_b[live] + 1L
       tr_b <- tr_b | (live & res$truncated & !res$terminated)
@@ -119,6 +147,72 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
            length_mean = mean(len), length_std = pop_sd(len))
   attr(out, "episodes") <- data.frame(return = ret, length = len, truncated = trunc)
   out
+}
+
+# Sampled actions for one batch, each live slot from its own RNG stream.
+# `d` is a policy_dist() result for the whole batch; `streams` are the
+# .Random.seed vectors of the slots in `slots` (column indices of `d`). A slot
+# draws only while it is live, so its stream does not depend on how long the
+# other slots of the batch run. Other columns get the greedy action (they are
+# stepped but not counted). Returns the actions (0-based integers, or the
+# [act_dim, B] matrix before clipping) and the advanced streams.
+sample_slots <- function(d, streams, slots) {
+  draw <- function(i, f) {
+    assign(".Random.seed", streams[[i]], envir = globalenv())
+    x <- f()
+    streams[[i]] <<- get(".Random.seed", envir = globalenv())
+    x
+  }
+  if (!is.null(d$logits)) {
+    x <- d$logits
+    act <- max.col(t(x), ties.method = "first") - 1L
+    for (i in seq_along(slots)) {
+      j <- slots[i]
+      # Gumbel-max, as ag_sample_categorical()
+      g <- draw(i, function() -log(-log(stats::runif(nrow(x)))))
+      act[j] <- which.max(x[, j] + g) - 1L
+    }
+  } else {
+    act <- d$mu
+    log_std <- matrix(d$log_std, nrow = nrow(act))
+    for (i in seq_along(slots)) {
+      j <- slots[i]
+      ls <- log_std[, min(j, ncol(log_std))]
+      # mu + eps * exp(log_std), as ag_sample_normal()
+      act[, j] <- act[, j] + draw(i, function() stats::rnorm(nrow(act))) * exp(ls)
+    }
+  }
+  list(act = act, streams = streams)
+}
+
+# Independent L'Ecuyer-CMRG streams, one per episode, from `base`: episode i
+# gets the i-th stream after the one set.seed(base) gives, so it depends only
+# on `base` and i (not on the batching), and its RNG is not the seed used to
+# reset the episode. Call it between rng_snapshot() and its restore.
+slot_streams <- function(base, n) {
+  set.seed(base, kind = "L'Ecuyer-CMRG")
+  s <- get(".Random.seed", envir = globalenv())
+  out <- vector("list", n)
+  for (i in seq_len(n)) {
+    s <- parallel::nextRNGStream(s)
+    out[[i]] <- s
+  }
+  out
+}
+
+# Snapshot of the caller's RNG: kind and .Random.seed. The returned function
+# puts both back, or removes .Random.seed if there was none, for on.exit().
+rng_snapshot <- function() {
+  kind <- RNGkind()
+  has_seed <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (has_seed) seed <- get(".Random.seed", envir = globalenv())
+  function() {
+    # RNGkind() reseeds, so the saved .Random.seed is written after it
+    RNGkind(kind[1], kind[2], kind[3])
+    if (has_seed) assign(".Random.seed", seed, envir = globalenv())
+    else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+      rm(".Random.seed", envir = globalenv())
+  }
 }
 
 # Population standard deviation (divides by n), as in RLtools.
