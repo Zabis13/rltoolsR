@@ -1,0 +1,163 @@
+---
+title: "Getting started: environments, PPO, evaluation"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{01. Getting started: environments, PPO, evaluation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+# Vignette code is executed locally (NOT_CRAN=true) but not on CRAN, where
+# training would take too long and the CPU fallback could multi-thread.
+knitr::opts_chunk$set(eval = identical(Sys.getenv("NOT_CRAN"), "true"))
+```
+
+rltoolsR runs reinforcement learning in R: environments in C++ (from
+[RLtools](https://github.com/rl-tools/rl-tools)) or as ggml graphs, neural
+networks on the GPU through [ggmlR](https://github.com/Zabis13/ggmlR) (Vulkan)
+with a CPU fallback. Training here is kept short, a few seconds per chunk:
+enough to show the API, not to learn a good policy.
+
+```{r}
+library(rltoolsR)
+```
+
+## 1. Environments
+
+`rl_env_names()` lists the built-in environments. An environment has an
+observation space, an action space and a step limit.
+
+```{r}
+rl_env_names()
+
+env <- rl_env("pendulum", seed = 1)
+env$observation_space
+env$action_space
+env$max_steps
+```
+
+`rl_reset()` starts an episode, `rl_step()` takes an action and returns the
+next observation, the reward and whether the episode `terminated` (a terminal
+state) or was `truncated` (the step limit).
+
+```{r}
+obs <- rl_reset(env, seed = 1)
+r <- rl_step(env, 0.5)
+str(r)
+```
+
+`rl_save_state()` / `rl_load_state()` snapshot an environment, e.g. for search
+algorithms:
+
+```{r}
+s <- rl_save_state(env)
+a <- rl_step(env, 1)$obs
+rl_load_state(env, s)
+b <- rl_step(env, 1)$obs
+all.equal(a, b)
+```
+
+`rl_vec_env()` steps `n` copies in one call and returns batched matrices.
+Finished copies reset on their own; `final_obs` keeps the last observation of
+the finished episode.
+
+```{r}
+venv <- rl_vec_env("pendulum", n = 4, seed = 1)
+obs <- rl_reset(venv)
+dim(obs)
+r <- rl_step(venv, c(-1, 0, 0.5, 1))
+r$reward
+```
+
+Spaces follow Gymnasium: `space_box()`, `space_discrete()`,
+`space_multi_discrete()`, `space_multi_binary()`, `space_dict()`.
+
+```{r}
+space_size(space_dict(pos = space_box(-1, 1, shape = 2), cell = space_discrete(9)))
+```
+
+## 2. Train PPO on Pendulum
+
+`rl_ppo()` describes the algorithm, `rl_train()` runs it for a budget of
+environment steps. Continuous actions use a Gaussian policy; observations and
+rewards are normalized by default.
+
+```{r}
+set.seed(1)
+env <- rl_vec_env("pendulum", n = 8, seed = 1)
+algo <- rl_ppo(n_steps = 128, epochs = 4, minibatch = 256, gamma = 0.9)
+model <- rl_train(env, algo, total_steps = 8 * 128 * 4, device = "cpu",
+                  verbose = FALSE)
+tail(model$history, 3)
+```
+
+`model$history` has one row per iteration: steps, finished episodes and the
+losses of the update.
+
+## 3. Evaluate
+
+`rl_evaluate()` runs whole episodes on a separate environment and returns the
+mean and standard deviation of the return and the episode length. Episode `i`
+starts from seed `seed + i - 1`, so every evaluation sees the same initial
+states, whatever `n_envs` is.
+
+```{r}
+res <- rl_evaluate(model, "pendulum", n_episodes = 8)
+res
+head(attr(res, "episodes"))
+```
+
+With `greedy = FALSE` the actions are sampled. Each episode then has its own
+RNG stream, so the result still does not depend on `n_envs`, and the caller's
+RNG is left as it was.
+
+```{r}
+rl_evaluate(model, "pendulum", n_episodes = 8, greedy = FALSE)
+```
+
+## 4. Act, save and load
+
+`rl_act()` picks actions for a batch of observations (one row each).
+
+```{r}
+obs <- rl_reset(rl_vec_env("pendulum", n = 2, seed = 5))
+rl_act(model, obs)
+```
+
+`rl_save_model()` keeps the weights and the metadata needed to rebuild the
+network; `rl_load_model()` places it on any device. A model trained on the GPU
+runs on the CPU and back.
+
+```{r}
+f <- tempfile(fileext = ".rds")
+rl_save_model(model, f)
+m2 <- rl_load_model(f, device = "cpu")
+all.equal(rl_act(m2, obs), rl_act(model, obs))
+```
+
+## 5. Tic-tac-toe: discrete actions and self-play
+
+`rl_gpu_env("tictactoe", n)` plays `n` games at once as a ggml graph. With
+`opponent = "self"` the policy plays both sides; `rl_legal_actions()` gives the
+mask of free cells, which PPO applies before choosing a move.
+
+```{r}
+set.seed(1)
+ttt <- rl_gpu_env("tictactoe", n = 64, opponent = "self", device = "cpu")
+m <- rl_ppo_train(ttt, iterations = 20, minibatch = 576, device = "cpu",
+                  verbose = FALSE)
+rl_ppo_eval_tictactoe(m, n = 200)
+```
+
+`rl_ppo_eval_tictactoe()` plays as X against a random opponent and reports the
+fractions of wins, draws and losses. To play against the model in the console:
+
+```{r, eval = FALSE}
+rl_play_tictactoe(m, human = "O")
+```
+
+## Next
+
+The *Training loop* vignette covers evaluation during training, CSV logs,
+checkpoints and resume, the GPU, and writing your own algorithm.

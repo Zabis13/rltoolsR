@@ -8,7 +8,7 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
 
 ## Features
 
-- Neural networks run on GPU through ggmlR (Vulkan): forward and backward passes and Adam during training, and the forward pass in `rl_act()`. Action selection and masking run in R. GPU environments run as ggml graphs. `device = "auto"` falls back to the CPU when no Vulkan device is found.
+- Neural networks run on GPU through ggmlR (Vulkan): forward and backward passes and Adam during training, each update step recorded once as a captured graph and replayed; the forward pass in `rl_act()`. Action masking, argmax and sampling run through ggmlR ops on the forward outputs. GPU environments run as ggml graphs. `device = "auto"` falls back to the CPU when no Vulkan device is found.
 - Environments:
   - `rl_env(name)`: [RLtools](https://github.com/rl-tools/rl-tools) continuous control in C++: `pendulum`, `acrobot`, `acrobot_swingup`, `car`, `car_track`
   - `rl_vec_env(name, n)`: `n` copies stepped in one call, auto-reset with `final_obs`
@@ -16,9 +16,9 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
   - Common API: `rl_reset()`, `rl_step()`, `rl_legal_actions()`, `rl_save_state()` / `rl_load_state()`
   - Gymnasium-style spaces: `space_box()`, `space_discrete()`, `space_multi_discrete()`, `space_multi_binary()`, `space_dict()`
 - PPO (`rl_ppo()`, `rl_ppo_train()`): discrete actions with legal-action masking and self-play, continuous actions with a Gaussian policy; observation and reward normalization
-- Training loop `rl_train()` for any `rl_algo()`: step budget, separate RNG streams for training and evaluation, CSV logging, checkpoints and resume
+- Training loop `rl_train()` for any `rl_algo()` (write your own): step budget, evaluation during training on its own RNG stream, CSV logs written while training runs, atomic checkpoints with the full training state (weights, normalizer statistics, Adam moments, RNG streams) and resume
 - Models: `rl_save_model()` / `rl_load_model()` (train on GPU, run on CPU), `rl_act()`, `rl_save_checkpoint()`
-- Evaluation `rl_evaluate()`: mean return and episode length over N episodes, deterministic policy, reproducible seeded slots, per-episode results; usable as `eval_fn` in `rl_train()`
+- Evaluation `rl_evaluate()`: mean return and episode length over N episodes, reproducible seeded episodes, per-episode results; greedy or sampled actions (each episode samples from its own RNG stream, so results do not depend on the batch size); usable as `eval_fn` in `rl_train()`
 - Replay buffer for off-policy algorithms (internal): transitions in one device buffer, batches gathered and split into fields on the GPU
 - Play tic-tac-toe against a trained model: `rl_play_tictactoe()`
 
@@ -41,6 +41,16 @@ Scripts in `inst/examples`:
 - `train_and_run_tictactoe.R`: train PPO on tic-tac-toe, save, load, evaluate
 - `train_and_run_pendulum.R`: PPO with a Gaussian policy on Pendulum
 - `play_tictactoe.R`: play against a saved model, `Rscript play_tictactoe.R model.rds O`
+- `check_collect_cpu_gpu.R`: PPO rollouts on the GPU against the CPU, same weights and seed
+
+## Vignettes
+
+- *Getting started*: environments and spaces, PPO on Pendulum, evaluation, saving and loading models, tic-tac-toe self-play
+- *Training loop*: evaluation during training, CSV logs, checkpoints and resume, the GPU, writing your own algorithm
+
+```r
+browseVignettes("rltoolsR")
+```
 
 ## Architecture
 
@@ -53,9 +63,9 @@ Scripts in `inst/examples`:
 ## Installation
 
 ```r
+install.packages("ggmlR")          # from CRAN
 # install.packages("remotes")
-remotes::install_github("Zabis13/ggmlR")
-remotes::install_github("Zabis13/rltoolsR")
+remotes::install_github("Zabis13/rltoolsR", build_vignettes = TRUE)
 ```
 
 ## License

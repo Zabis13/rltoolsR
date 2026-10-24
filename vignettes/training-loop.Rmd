@@ -1,0 +1,143 @@
+---
+title: "Training loop: evaluation, logs, checkpoints, GPU, custom algorithms"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{02. Training loop: evaluation, logs, checkpoints, GPU, custom algorithms}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+# Vignette code is executed locally (NOT_CRAN=true) but not on CRAN, where
+# training would take too long and the CPU fallback could multi-thread.
+knitr::opts_chunk$set(eval = identical(Sys.getenv("NOT_CRAN"), "true"))
+```
+
+`rl_train()` runs any algorithm built with `rl_algo()` (PPO is one) for a
+budget of environment steps, and handles what every run needs: evaluation,
+logs, checkpoints, resume and reproducible RNG. Training is kept short here.
+
+```{r}
+library(rltoolsR)
+
+env <- rl_vec_env("pendulum", n = 8, seed = 1)
+algo <- rl_ppo(n_steps = 128, minibatch = 256, gamma = 0.9)
+budget <- 8 * 128 * 4                  # 4 iterations
+```
+
+## 1. Evaluation during training
+
+`eval_fn` is called with the current model every `eval_every_steps`
+environment steps and returns a named numeric vector; `rl_evaluate()` fits
+directly. Evaluation runs on its own RNG stream, so turning it on or off does
+not change the training trajectory.
+
+```{r}
+set.seed(1)
+m <- rl_train(env, algo, total_steps = budget, device = "cpu", verbose = FALSE,
+              eval_every_steps = 2 * 8 * 128,
+              eval_fn = function(model) rl_evaluate(model, "pendulum", n_episodes = 4))
+m$eval
+```
+
+## 2. CSV logs
+
+With `log = "run.csv"` every iteration is appended to `run.csv` and every
+evaluation to `run_eval.csv` while training runs, so a long run can be watched
+from outside R. Numbers are written in full precision.
+
+```{r}
+dir <- tempfile("rlt_")
+dir.create(dir)
+log <- file.path(dir, "run.csv")
+
+set.seed(1)
+m <- rl_train(env, algo, total_steps = budget, device = "cpu", verbose = FALSE,
+              eval_every_steps = 2 * 8 * 128,
+              eval_fn = function(model) rl_evaluate(model, "pendulum", n_episodes = 4),
+              log = log)
+head(read.csv(log), 3)
+read.csv(file.path(dir, "run_eval.csv"))
+```
+
+An existing log is never overwritten silently: pass `overwrite = TRUE` to
+start it again.
+
+## 3. Checkpoints and resume
+
+`checkpoint` writes the model with its whole training state: weights,
+normalizer statistics, Adam moments, counters, both RNG streams, history and
+evaluations. The file is written atomically, so an interrupted write keeps the
+previous checkpoint. `checkpoint_every_steps` saves during the run as well.
+
+```{r}
+ck <- file.path(dir, "ck.rds")
+set.seed(1)
+m <- rl_train(env, algo, total_steps = budget, device = "cpu", verbose = FALSE,
+              checkpoint = ck, checkpoint_every_steps = 2 * 8 * 128)
+m$train_state$steps
+```
+
+`resume` continues from a checkpoint up to a larger budget. The environment is
+reset, so an episode unfinished at the checkpoint is lost; everything else
+continues where it stopped.
+
+```{r}
+m2 <- rl_train(env, algo, total_steps = 2 * budget, device = "cpu",
+               verbose = FALSE, resume = ck)
+nrow(m2$history)
+```
+
+A checkpoint is also a model file: `rl_load_model(ck)` reads it for
+`rl_act()`.
+
+## 4. GPU
+
+`device = "auto"` trains on the GPU when a Vulkan device is available and on
+the CPU otherwise; `"gpu"` and `"cpu"` force one. The network, the backward
+pass and Adam run on the device; each update step is recorded once as a
+captured ggmlR graph and replayed (`rl_ppo(capture = TRUE)`, the default).
+
+```{r}
+ggmlR::ggml_vulkan_available()
+```
+
+```{r, eval = identical(Sys.getenv("NOT_CRAN"), "true") && ggmlR::ggml_vulkan_available()}
+set.seed(1)
+m_gpu <- rl_train(env, algo, total_steps = budget, device = "gpu", verbose = FALSE)
+m_gpu$device
+```
+
+A small policy runs faster on the CPU: load models for acting with
+`rl_load_model(path, device = "cpu")` (the default) and keep the GPU for
+training, large batches and large networks.
+
+## 5. Your own algorithm
+
+An algorithm is a set of functions over a state that `rl_train()` passes
+around: `init` builds it, `collect` steps the environment, `update` learns,
+`model` returns what `rl_act()` / `rl_save_model()` use, and
+`get_train_state` / `set_train_state` make it resumable. A random policy shows
+the interface:
+
+```{r}
+random <- rl_algo("random",
+  init = function(env, device) list(),
+  collect = function(state, env) {
+    r <- rl_step(env, stats::runif(env$n, -2, 2))
+    list(state = state, steps = env$n, info = c(reward = mean(r$reward)))
+  },
+  update = function(state) list(state = state, metrics = NULL),
+  model = function(state) list(meta = list()),
+  get_train_state = function(state) list(optimizer_state = NULL),
+  set_train_state = function(state, train_state) state)
+
+env <- rl_vec_env("pendulum", n = 4, seed = 1)
+rl_reset(env)
+m <- rl_train(env, random, total_steps = 400, device = "cpu", verbose = FALSE)
+head(m$history)
+```
+
+`collect` reports how many environment steps it took and an `info` vector;
+`update` returns `metrics`. Both go into `history`, the CSV log and the
+console, with the same names in every iteration.
