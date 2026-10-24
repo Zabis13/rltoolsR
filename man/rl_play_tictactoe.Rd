@@ -22,3 +22,12 @@ the model answers with its greedy move. Enter `q` to quit. Input is read
 with [readline()] in an interactive session and from stdin under
 `Rscript`.
 }
+\examples{
+\donttest{
+if (interactive()) {
+  env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
+  m <- rl_ppo_train(env, iterations = 20, device = "cpu", verbose = FALSE)
+  rl_play_tictactoe(m, human = "O")
+}
+}
+}

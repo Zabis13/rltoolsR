@@ -182,6 +182,13 @@ rl_ppo_act <- rl_act
 #' @return An [rl_algo()].
 #' @seealso [rl_train()], [rl_ppo_train()]
 #' @export
+#' @examples
+#' algo <- rl_ppo(n_steps = 64, minibatch = 128, lr = 3e-4)
+#' \donttest{
+#' env <- rl_vec_env("pendulum", n = 4, seed = 1)
+#' m <- rl_train(env, algo, total_steps = 1024, device = "cpu", verbose = FALSE)
+#' tail(m$history)
+#' }
 rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                    gamma = 0.99, lambda = 0.95, clip = 0.2, vf_coef = 0.5,
                    ent_coef = 0.03, hidden = 64, normalize_obs = NULL,
@@ -655,6 +662,12 @@ ppo_free_captures <- function(captures) {
 #'   whatever the model's device (see [rl_gpu_env()] for why).
 #' @return Named numeric vector `win`, `draw`, `loss`.
 #' @export
+#' @examples
+#' \donttest{
+#' env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
+#' m <- rl_ppo_train(env, iterations = 5, device = "cpu", verbose = FALSE)
+#' rl_ppo_eval_tictactoe(m, n = 200)
+#' }
 rl_ppo_eval_tictactoe <- function(model, n = 512, device = "cpu") {
   env <- rl_gpu_env("tictactoe", n = n, opponent = "random", device = device)
   obs <- rl_reset(env)

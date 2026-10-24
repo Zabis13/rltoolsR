@@ -27,7 +27,7 @@ jobs:
         run: |
           PKG_VERSION=$(grep "^Version:" DESCRIPTION | awk '{print $2}')
           echo "version=$PKG_VERSION" >> $GITHUB_OUTPUT
-          echo "tarball=ggmlR_${PKG_VERSION}.tar.gz" >> $GITHUB_OUTPUT
+          echo "tarball=rltoolsR_${PKG_VERSION}.tar.gz" >> $GITHUB_OUTPUT
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

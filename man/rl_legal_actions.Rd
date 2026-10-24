@@ -17,3 +17,13 @@ Logical mask over discrete actions (`n x n_actions` matrix for
 \description{
 Legal actions in the current state
 }
+\examples{
+# continuous action space: no legal-action mask
+env <- rl_env("pendulum", seed = 1)
+rl_legal_actions(env)
+\donttest{
+g <- rl_gpu_env("tictactoe", n = 2, device = "cpu")
+obs <- rl_reset(g)
+rl_legal_actions(g)
+}
+}

@@ -5,8 +5,6 @@
 *.Rproj
 
 # Package build artifacts
-src/Makevars
-src/Makevars.win
 *.o
 *.so
 *.dll

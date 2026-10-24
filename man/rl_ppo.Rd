@@ -92,6 +92,14 @@ sets of statistics are fixed during a rollout and its update, and are
 updated from the rollout once it is complete, so they lag by one
 iteration; the first rollout is seen unnormalized.
 }
+\examples{
+algo <- rl_ppo(n_steps = 64, minibatch = 128, lr = 3e-4)
+\donttest{
+env <- rl_vec_env("pendulum", n = 4, seed = 1)
+m <- rl_train(env, algo, total_steps = 1024, device = "cpu", verbose = FALSE)
+tail(m$history)
+}
+}
 \seealso{
 [rl_train()], [rl_ppo_train()]
 }

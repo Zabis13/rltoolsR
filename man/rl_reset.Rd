@@ -20,3 +20,8 @@ Numeric observation vector (`rl_env`) or `n x obs_dim` matrix
 \description{
 Reset an environment
 }
+\examples{
+env <- rl_env("pendulum", seed = 1)
+rl_reset(env)
+rl_reset(env, seed = 2)
+}

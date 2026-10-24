@@ -31,6 +31,16 @@ RL_CHECKPOINT_MAX_ROWS <- 100000L
 #' @return `path`, invisibly.
 #' @seealso [rl_train()], [rl_load_model()]
 #' @export
+#' @examples
+#' \donttest{
+#' env <- rl_vec_env("pendulum", n = 4, seed = 1)
+#' m <- rl_train(env, rl_ppo(n_steps = 64, minibatch = 128), total_steps = 512,
+#'               device = "cpu", verbose = FALSE)
+#' f <- tempfile(fileext = ".rds")
+#' rl_save_checkpoint(m, f)
+#' m2 <- rl_train(env, rl_ppo(n_steps = 64, minibatch = 128), total_steps = 1024,
+#'                device = "cpu", verbose = FALSE, resume = f)
+#' }
 rl_save_checkpoint <- function(model, path) {
   ts <- model$train_state
   if (is.null(ts)) stop("rl_save_checkpoint(): `model` has no train_state (train it with rl_train())")

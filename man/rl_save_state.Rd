@@ -22,3 +22,12 @@ rl_load_state(env, state)
 Snapshots hold the environment state and step counter, not the RNG
 state. Used by search algorithms such as MCTS.
 }
+\examples{
+env <- rl_env("pendulum", seed = 1)
+obs <- rl_reset(env)
+s <- rl_save_state(env)
+r1 <- rl_step(env, 1)$obs
+rl_load_state(env, s)
+r2 <- rl_step(env, 1)$obs
+all.equal(r1, r2)
+}

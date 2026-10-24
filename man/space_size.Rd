@@ -15,3 +15,7 @@ Integer number of elements.
 \description{
 Size of a flat sample from a space
 }
+\examples{
+space_size(space_box(-1, 1, shape = c(2, 3)))
+space_size(space_dict(pos = space_box(0, 1, shape = 2), cell = space_discrete(9)))
+}

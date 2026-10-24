@@ -10,6 +10,14 @@
 #' @param device Device for the game environment.
 #' @return Invisibly, the winner (`"X"`, `"O"`), `"draw"`, or `NA` if quit.
 #' @export
+#' @examples
+#' \donttest{
+#' if (interactive()) {
+#'   env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
+#'   m <- rl_ppo_train(env, iterations = 20, device = "cpu", verbose = FALSE)
+#'   rl_play_tictactoe(m, human = "O")
+#' }
+#' }
 rl_play_tictactoe <- function(model, human = c("O", "X"), device = "cpu") {
   human <- match.arg(human)
   read_line <- function(prompt) {

@@ -30,6 +30,16 @@ stored metadata and places it on `device`.
 The file is read with [readRDS()], which can deserialize arbitrary R
 objects: load only files from trusted sources.
 }
+\examples{
+\donttest{
+env <- rl_gpu_env("tictactoe", n = 16, device = "cpu")
+m <- rl_ppo_train(env, iterations = 1, device = "cpu", verbose = FALSE)
+f <- tempfile(fileext = ".rds")
+rl_save_model(m, f)
+m2 <- rl_load_model(f)
+rl_ppo_eval_tictactoe(m2, n = 50)
+}
+}
 \seealso{
 [rl_save_model()]
 }

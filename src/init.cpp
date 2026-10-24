@@ -1,8 +1,9 @@
+#include <rl_tools/version.h>
+
+#define R_NO_REMAP
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
-
-#include <rl_tools/version.h>
 
 extern "C" SEXP rlt_version(void) {
     return Rf_mkString(RL_TOOLS_STRINGIFY(RL_TOOLS_COMMIT_HASH));

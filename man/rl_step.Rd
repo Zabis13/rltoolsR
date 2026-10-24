@@ -29,3 +29,9 @@ A `rl_vec_env` resets finished copies in the same step: `obs` holds
 the first observation of the new episode and `final_obs` the last
 observation of the finished one (use it to bootstrap on truncation).
 }
+\examples{
+env <- rl_env("pendulum", seed = 1)
+obs <- rl_reset(env)
+res <- rl_step(env, 0.5)
+str(res)
+}

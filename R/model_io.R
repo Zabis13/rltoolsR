@@ -132,6 +132,15 @@ read_model_file <- function(path, who) {
 #'   with [rl_act()].
 #' @seealso [rl_save_model()]
 #' @export
+#' @examples
+#' \donttest{
+#' env <- rl_gpu_env("tictactoe", n = 16, device = "cpu")
+#' m <- rl_ppo_train(env, iterations = 1, device = "cpu", verbose = FALSE)
+#' f <- tempfile(fileext = ".rds")
+#' rl_save_model(m, f)
+#' m2 <- rl_load_model(f)
+#' rl_ppo_eval_tictactoe(m2, n = 50)
+#' }
 rl_load_model <- function(path, device = c("cpu", "gpu", "auto")) {
   device <- rl_resolve_device(match.arg(device))
   obj <- read_model_file(path, "rl_load_model()")

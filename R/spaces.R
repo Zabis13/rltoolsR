@@ -66,6 +66,9 @@ space_dict <- function(...) {
 #' @param space An `rl_space`.
 #' @return Integer number of elements.
 #' @export
+#' @examples
+#' space_size(space_box(-1, 1, shape = c(2, 3)))
+#' space_size(space_dict(pos = space_box(0, 1, shape = 2), cell = space_discrete(9)))
 space_size <- function(space) {
   switch(space$type,
     box = ,

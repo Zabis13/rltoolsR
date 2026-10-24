@@ -21,3 +21,10 @@ Named numeric vector `win`, `draw`, `loss`.
 Plays `n` games as X against a uniformly random opponent with the greedy
 policy and reports the fractions of wins, draws and losses.
 }
+\examples{
+\donttest{
+env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
+m <- rl_ppo_train(env, iterations = 5, device = "cpu", verbose = FALSE)
+rl_ppo_eval_tictactoe(m, n = 200)
+}
+}

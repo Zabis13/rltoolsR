@@ -1,11 +1,12 @@
 // .Call interface to the environment contract.
-#include <R.h>
-#include <Rinternals.h>
-
 #include <cstdio>
 #include <exception>
 
 #include "env.h"
+
+#define R_NO_REMAP
+#include <R.h>
+#include <Rinternals.h>
 
 namespace rltr {
 

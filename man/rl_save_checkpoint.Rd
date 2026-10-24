@@ -35,6 +35,17 @@ The file is written to a temporary file in the same directory and then
 renamed over `path`, so an interrupted write leaves the previous
 checkpoint intact.
 }
+\examples{
+\donttest{
+env <- rl_vec_env("pendulum", n = 4, seed = 1)
+m <- rl_train(env, rl_ppo(n_steps = 64, minibatch = 128), total_steps = 512,
+              device = "cpu", verbose = FALSE)
+f <- tempfile(fileext = ".rds")
+rl_save_checkpoint(m, f)
+m2 <- rl_train(env, rl_ppo(n_steps = 64, minibatch = 128), total_steps = 1024,
+               device = "cpu", verbose = FALSE, resume = f)
+}
+}
 \seealso{
 [rl_train()], [rl_load_model()]
 }

@@ -39,6 +39,10 @@ rl_env_names <- function() {
 #' @return Numeric observation vector (`rl_env`) or `n x obs_dim` matrix
 #'   (`rl_vec_env`, `rl_gpu_env`).
 #' @export
+#' @examples
+#' env <- rl_env("pendulum", seed = 1)
+#' rl_reset(env)
+#' rl_reset(env, seed = 2)
 rl_reset <- function(env, seed = NULL) UseMethod("rl_reset")
 
 #' @export
@@ -70,6 +74,11 @@ rl_reset.rl_vec_env <- function(env, seed = NULL) {
 #'   mask for the next move) and `player` (side to move). Vectorized fields
 #'   have one row or element per copy.
 #' @export
+#' @examples
+#' env <- rl_env("pendulum", seed = 1)
+#' obs <- rl_reset(env)
+#' res <- rl_step(env, 0.5)
+#' str(res)
 rl_step <- function(env, action) UseMethod("rl_step")
 
 #' @export
@@ -89,6 +98,15 @@ rl_step.rl_vec_env <- function(env, action) {
 #'   `rl_vec_env` and `rl_gpu_env`), or `NULL` when the action space has no notion of legal
 #'   actions (e.g. continuous `Box`).
 #' @export
+#' @examples
+#' # continuous action space: no legal-action mask
+#' env <- rl_env("pendulum", seed = 1)
+#' rl_legal_actions(env)
+#' \donttest{
+#' g <- rl_gpu_env("tictactoe", n = 2, device = "cpu")
+#' obs <- rl_reset(g)
+#' rl_legal_actions(g)
+#' }
 rl_legal_actions <- function(env) UseMethod("rl_legal_actions")
 
 #' @export
@@ -147,6 +165,14 @@ print.rl_vec_env <- function(x, ...) {
 #' @return `rl_save_state()` returns a raw vector; `rl_load_state()`
 #'   returns `env` invisibly.
 #' @export
+#' @examples
+#' env <- rl_env("pendulum", seed = 1)
+#' obs <- rl_reset(env)
+#' s <- rl_save_state(env)
+#' r1 <- rl_step(env, 1)$obs
+#' rl_load_state(env, s)
+#' r2 <- rl_step(env, 1)$obs
+#' all.equal(r1, r2)
 rl_save_state <- function(env) {
   check_env(env)
   .Call(rlt_env_save_state, env$ptr)
