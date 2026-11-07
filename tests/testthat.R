@@ -3,7 +3,8 @@ library(rltoolsR)
 
 heavy <- c(
   "ppo",
-  "model-io-gpu"
+  "model-io-gpu",
+  "env-rltools"
 )
 
 on_cran <- !identical(Sys.getenv("NOT_CRAN"), "true")
