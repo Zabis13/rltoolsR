@@ -5,9 +5,29 @@ Version: 0.1.1
 Authors@R: c(
     person("Yuri", "Baramykov", email = "lbsbmsu@mail.ru", role = c("aut", "cre"),
            comment = c(ORCID = "0009-0000-7627-4217")),
-    person("Jonas", "Eschmann", role = "cph",
-           comment = "Author of the 'RLtools' library included in inst/include/"))
-Description: Provides a reinforcement learning toolkit for R with a unified
+    person("Jonas", "Eschmann", role = c("ctb", "cph"),
+           comment = "Author of the 'RLtools' library included in inst/include/"),
+    person("Rich", "Felker", role = c("ctb", "cph"),
+           comment = "Author of 'musl' libc; acos code in inst/include/rl_tools/math/operations_generic.h"),
+    person("Sun Microsystems, Inc.", role = "cph",
+           comment = "FreeBSD msun acos code in inst/include/rl_tools/math/operations_generic.h"),
+    person("Ian Lance", "Taylor", role = "ctb",
+           comment = "Float conversion of the acos code"),
+    person("OpenAI", role = "cph",
+           comment = "'Gym'/'Gymnasium' acrobot environment adapted in inst/include/rl_tools/rl/environments/acrobot/"),
+    person("Farama Foundation", role = "cph",
+           comment = "'Gymnasium' acrobot environment adapted in inst/include/rl_tools/rl/environments/acrobot/"),
+    person("Christoph", "Dann", role = c("ctb", "cph"),
+           comment = "Author of the RLPy acrobot environment"),
+    person("Alborz", "Geramifard", role = c("ctb", "cph"),
+           comment = "RLPy acrobot environment"),
+    person("Robert H.", "Klein", role = c("ctb", "cph"),
+           comment = "RLPy acrobot environment"),
+    person("William", "Dabney", role = c("ctb", "cph"),
+           comment = "RLPy acrobot environment"),
+    person("Jonathan P.", "How", role = c("ctb", "cph"),
+           comment = "RLPy acrobot environment"))
+Description: Provides reinforcement learning tools with a unified
     environment interface and 'Gymnasium'-style action and observation
     spaces. Environments include continuous control tasks from the
     header-only 'RLtools' C++ library (Eschmann et al. (2024)
@@ -18,6 +38,7 @@ Description: Provides a reinforcement learning toolkit for R with a unified
     algorithms. Neural networks are trained with 'ggmlR', with 'Vulkan'
     GPU acceleration and a transparent CPU fallback.
 License: MIT + file LICENSE
+Copyright: See inst/COPYRIGHTS for bundled third-party code.
 URL: https://github.com/Zabis13/rltoolsR
 BugReports: https://github.com/Zabis13/rltoolsR/issues
 Encoding: UTF-8

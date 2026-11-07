@@ -21,7 +21,7 @@ test_that("an optimizer step updates every named parameter", {
   set.seed(1)
   prev <- ag_device("cpu")
   on.exit(ag_device(prev), add = TRUE)
-  net <- ppo_net(9L, 9L, 8L)
+  net <- rltoolsR:::ppo_net(9L, 9L, 8L)
   q <- net$parameters()
   expect_named(q, c("l1_W", "l1_b", "l2_W", "l2_b", "pi_W", "pi_b", "v_W", "v_b"))
   w0 <- lapply(q, as.matrix)

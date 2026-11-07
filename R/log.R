@@ -65,7 +65,11 @@ csv_logger <- function(path, overwrite = FALSE, append = FALSE, keep_steps = 0) 
     lines <- paste(sprintf("%.17g", unname(row)), collapse = ",")
     if (first) lines <- c(paste(names(row), collapse = ","), lines)
     ok <- tryCatch({
-      suppressWarnings(cat(paste0(lines, "\n"), file = lg$files[[kind]], append = TRUE, sep = ""))
+      suppressWarnings({
+        con <- file(lg$files[[kind]], "a")
+        on.exit(close(con), add = TRUE)
+        writeLines(lines, con)
+      })
       TRUE
     }, error = function(e) {
       warning("rl_train(): writing '", lg$files[[kind]], "' failed (",

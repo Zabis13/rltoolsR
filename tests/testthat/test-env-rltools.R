@@ -45,13 +45,16 @@ for (nm in names(envs)) {
     expect_null(rl_legal_actions(env))
     rl_reset(env, seed = 3)
     a <- rep(0.1, e$act)
+    bad <- NA_integer_   # first step with malformed fields
     for (i in seq_len(e$max_steps)) {
       r <- rl_step(env, a)
-      expect_true(is.numeric(r$reward) && length(r$reward) == 1L)
-      expect_true(is.logical(r$terminated) && length(r$terminated) == 1L)
-      expect_true(is.logical(r$truncated) && length(r$truncated) == 1L)
+      ok <- is.numeric(r$reward) && length(r$reward) == 1L &&
+        is.logical(r$terminated) && length(r$terminated) == 1L &&
+        is.logical(r$truncated) && length(r$truncated) == 1L
+      if (!ok) { bad <- i; break }
       if (r$terminated || r$truncated) break
     }
+    expect_identical(bad, NA_integer_, label = "first step with malformed fields")
     # an episode ends by max_steps; truncation only at the limit itself
     expect_true(r$terminated || r$truncated)
     expect_equal(r$truncated, !r$terminated && i == e$max_steps)
