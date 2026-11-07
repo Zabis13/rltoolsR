@@ -1,7 +1,8 @@
-rltoolsR bundles the following third-party code.
+rltoolsR contains code ported from the following third-party sources.
 
 RLtools — https://github.com/rl-tools/rl-tools
-Bundled in: inst/include/rl_tools (subset of headers)
+Used in: src/env_control.cpp, src/car_track_data.h (pendulum, acrobot,
+car environments and the default car track, ported to standalone C++)
 License: MIT
 
 MIT License
@@ -28,49 +29,8 @@ SOFTWARE.
 
 
 ======================================================================
-musl libc / FreeBSD msun — acos
-Used in: inst/include/rl_tools/math/operations_generic.h (acos, float
-version), taken by RLtools from
-https://git.musl-libc.org/cgit/musl/tree/src/math/acosf.c?h=v1.2.5
-(origin: FreeBSD /usr/src/lib/msun/src/e_acosf.c).
-Conversion to float by Ian Lance Taylor, Cygnus Support.
-
-Notice preserved from the source file:
-
-    Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-
-    Developed at SunPro, a Sun Microsystems, Inc. business.
-    Permission to use, copy, modify, and distribute this
-    software is freely granted, provided that this notice
-    is preserved.
-
-musl as a whole is licensed under the MIT license:
-
-Copyright © 2005-2020 Rich Felker, et al.
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-======================================================================
 Gymnasium — acrobot environment
-Used in: inst/include/rl_tools/rl/environments/acrobot/ (adapted by
+Used in: src/env_control.cpp, acrobot (adapted by
 RLtools from
 https://github.com/Farama-Foundation/Gymnasium/blob/v0.28.1/gymnasium/envs/classic_control/acrobot.py)
 License: MIT

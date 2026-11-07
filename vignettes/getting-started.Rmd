@@ -13,7 +13,7 @@ vignette: >
 knitr::opts_chunk$set(eval = identical(Sys.getenv("NOT_CRAN"), "true"))
 ```
 
-rltoolsR runs reinforcement learning in R: environments in C++ (from
+rltoolsR runs reinforcement learning in R: environments in C++ (ported from
 [RLtools](https://github.com/rl-tools/rl-tools)) or as ggml graphs, neural
 networks on the GPU through [ggmlR](https://github.com/Zabis13/ggmlR) (Vulkan)
 with a CPU fallback. Training here is kept short, a few seconds per chunk:

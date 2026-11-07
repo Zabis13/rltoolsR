@@ -3,6 +3,8 @@
 * New `rl_evaluate()` — mean return and length over N episodes on a vectorized environment, deterministic policy by default, one episode per seeded slot (independent of the number of copies), truncated episodes flagged; per-episode results in the `episodes` attribute. Usable as `eval_fn` in `rl_train()`.
 * Replay buffer for off-policy algorithms (internal): transitions packed in one ggmlR device buffer, ring writes, batches gathered and split into fields on the device, saved and loaded in parts.
 * Requires ggmlR (>= 0.8.7).
+* The RLtools headers are no longer bundled (`inst/include/rl_tools` removed): `pendulum`, `acrobot`, `acrobot_swingup`, `car` and `car_track` are ported to standalone C++ in `src/env_control.cpp`. Same dynamics and rewards; `car_track` lidar no longer reads outside the track map. Trajectories for a given seed may differ in the last float digits.
+* Removed `rltools_version()`.
 
 # rltoolsR 0.1.0
 

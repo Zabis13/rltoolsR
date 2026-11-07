@@ -1,13 +1,7 @@
-#include <rl_tools/version.h>
-
 #define R_NO_REMAP
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
-
-extern "C" SEXP rlt_version(void) {
-    return Rf_mkString(RL_TOOLS_STRINGIFY(RL_TOOLS_COMMIT_HASH));
-}
 
 extern "C" {
 SEXP rlt_env_names(void);
@@ -26,7 +20,6 @@ SEXP rlt_vec_legal_mask(SEXP);
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"rlt_version", (DL_FUNC) &rlt_version, 0},
     {"rlt_env_names", (DL_FUNC) &rlt_env_names, 0},
     {"rlt_env_make", (DL_FUNC) &rlt_env_make, 2},
     {"rlt_env_spec", (DL_FUNC) &rlt_env_spec, 1},

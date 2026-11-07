@@ -10,7 +10,7 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
 
 - Neural networks run on GPU through ggmlR (Vulkan): forward and backward passes and Adam during training, each update step recorded once as a captured graph and replayed; the forward pass in `rl_act()`. Action masking, argmax and sampling run through ggmlR ops on the forward outputs. GPU environments run as ggml graphs. `device = "auto"` falls back to the CPU when no Vulkan device is found.
 - Environments:
-  - `rl_env(name)`: [RLtools](https://github.com/rl-tools/rl-tools) continuous control in C++: `pendulum`, `acrobot`, `acrobot_swingup`, `car`, `car_track`
+  - `rl_env(name)`: continuous control in C++, ported from [RLtools](https://github.com/rl-tools/rl-tools): `pendulum`, `acrobot`, `acrobot_swingup`, `car`, `car_track`
   - `rl_vec_env(name, n)`: `n` copies stepped in one call, auto-reset with `final_obs`
   - `rl_gpu_env("tictactoe", n)`: batched tic-tac-toe as a ggml graph on GPU/CPU, self-play or random opponent
   - Common API: `rl_reset()`, `rl_step()`, `rl_legal_actions()`, `rl_save_state()` / `rl_load_state()`
@@ -56,7 +56,7 @@ browseVignettes("rltoolsR")
 
 | Layer | Implementation |
 |---|---|
-| Environments | C++ (RLtools headers) via `.Call`; ggml graphs for GPU environments |
+| Environments | C++ via `.Call`; ggml graphs for GPU environments |
 | Neural networks | ggmlR (Vulkan / CPU) |
 | Algorithms, training loop | R |
 
@@ -72,7 +72,7 @@ remotes::install_github("Zabis13/rltoolsR", build_vignettes = TRUE)
 
 MIT © Yuri Baramykov.
 
-The package uses [RLtools](https://github.com/rl-tools/rl-tools) (MIT, Copyright (c) 2023 Jonas Eschmann); a subset of its headers is bundled in `inst/include/rl_tools`. See `inst/COPYRIGHTS`.
+The package uses [RLtools](https://github.com/rl-tools/rl-tools) (MIT, Copyright (c) 2023 Jonas Eschmann); the continuous-control environments in `src/env_control.cpp` are ported from it (the acrobot from Gymnasium). See `inst/COPYRIGHTS`.
 
 ## Author
 

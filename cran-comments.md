@@ -10,20 +10,24 @@ This is a resubmission. In this version I have:
   print() methods and the interactive `rl_play_tictactoe()`; informational output
   uses `message()`/`warning()`.
 
-* Authors and copyright holders: I searched all bundled sources
-  (`inst/include`, `src`) for third-party code and notices, and:
-  - removed the unused 'wasm32' headers of 'RLtools' (one of them
-    contained cbrt code from musl / FreeBSD msun);
-  - added to `Authors@R` all authors and copyright holders of the code that
-    remains: Jonas Eschmann ('RLtools'); Rich Felker ('musl'),
-    Sun Microsystems, Inc. and Ian Lance Taylor (acos code in
-    `inst/include/rl_tools/math/operations_generic.h`); OpenAI and
+* Authors and copyright holders: the package no longer bundles the
+  'RLtools' headers (`inst/include` is removed). The five continuous-control
+  environments that were used from it are ported to standalone C++ in
+  `src/env_control.cpp`, with the default race track in
+  `src/car_track_data.h`. As a result:
+  - the 'musl' / FreeBSD msun acos code is no longer included, and Rich
+    Felker, Sun Microsystems, Inc. and Ian Lance Taylor are removed from
+    `Authors@R`;
+  - `Authors@R` lists the authors and copyright holders of the code the
+    ported environments derive from: Jonas Eschmann ('RLtools'); OpenAI and
     Farama Foundation ('Gymnasium'), and the RLPy authors Christoph Dann,
     Alborz Geramifard, Robert H. Klein, William Dabney and Jonathan P. How
-    (acrobot environment adapted in `inst/include/rl_tools/rl/environments/acrobot/`);
-  - listed every component with its copyright notice and full license text
-    in `inst/COPYRIGHTS`. The original notices in the bundled files are
-    preserved unchanged.
+    (acrobot environment);
+  - `inst/COPYRIGHTS` gives each of these components with its copyright
+    notice and full license text, and names the files that use them.
+
+* Removed the exported `rltools_version()`, which returned the commit hash
+  of the bundled 'RLtools' headers.
 
 ## R CMD check results
 
