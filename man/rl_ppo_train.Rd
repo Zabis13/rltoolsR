@@ -33,7 +33,8 @@ rl_ppo_train(
   resume = NULL,
   append = FALSE,
   max_grad_norm = NULL,
-  capture = TRUE
+  capture = TRUE,
+  pool = NULL
 )
 }
 \arguments{
@@ -126,6 +127,23 @@ upload, two graph launches and one download per step instead of R-level op
 dispatch. Same results as the ordinary path (to rounding; checked on
 tic-tac-toe and Pendulum, several seeds). Measured on the GPU: update 3.6x
 (tic-tac-toe) and 5.4x (Pendulum) faster. `FALSE` runs the ordinary path.}
+
+\item{pool}{`NULL` (plain self-play, the default), `TRUE` or a list with
+any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
+against a pool of past policies, for two-player self-play environments
+only. Every `every` iterations the weights are copied into the pool
+(oldest dropped beyond `size`). At the start of each rollout every game
+independently plays self-play with probability `p_self`, otherwise
+against one snapshot drawn uniformly from the pool for that rollout, with
+the learner's side (X or O) drawn independently per game. GAE runs over
+the full trajectories (the learner's value net also scores the opponent's
+positions, the value being from the side to move); the snapshot's moves
+are then dropped and the rest randomly trimmed to a multiple of
+`minibatch` (of 64 below it), so update shapes stay fixed. Adds the
+history columns `used` (transitions trained on), `pool_games` (finished
+games against the pool), `pool_win` and `pool_loss` (the learner's share of
+wins and of losses in them, the rest draws) and `pool_win_x`, `pool_win_o`
+(the share of wins with the learner as X / as O); `NA` when no games.}
 }
 \value{
 A list of class `rl_ppo` with `net`, `device`, `meta`

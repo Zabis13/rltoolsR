@@ -292,7 +292,10 @@ check_row_names <- function(row, rows, what) {
 # here.
 
 train_hooks <- function(verbose, eval_on, logger = NULL) {
-  show <- function(x) message(paste(sprintf("%s=%.4g", names(x), x), collapse = " "))
+  # whole numbers (iteration, steps, episodes) in full, the rest to 4 digits
+  fmt <- function(x) ifelse(is.finite(x) & x == round(x) & abs(x) < 1e15,
+                            sprintf("%.0f", x), sprintf("%.4g", x))
+  show <- function(x) message(paste0(names(x), "=", fmt(unname(x)), collapse = " "))
   hooks <- list(after_iteration = list(), after_eval = list())
   if (verbose && !eval_on) hooks$after_iteration <- list(function(ctx) show(ctx$row))
   if (verbose && eval_on) {

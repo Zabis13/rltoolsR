@@ -31,7 +31,9 @@ test_that("the CSV logs match history and eval", {
   expect_equal(nrow(e), nrow(m$eval))
   expect_equal(e$steps, m$eval$steps)
   expect_true(all(is.na(e$miss)))
-  expect_equal(m$train_state$time >= max(h$time), TRUE)
+  # read.csv() may parse "%.17g" 1 ULP off (Windows), and the coarse timer
+  # there often makes the final time equal to the last logged one
+  expect_true(m$train_state$time >= max(h$time) - 1e-9)
 })
 
 test_that("numbers are written in full precision with a dot in any locale", {

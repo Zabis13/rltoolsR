@@ -200,6 +200,22 @@ rl_ppo_act <- rl_act
 #'   dispatch. Same results as the ordinary path (to rounding; checked on
 #'   tic-tac-toe and Pendulum, several seeds). Measured on the GPU: update 3.6x
 #'   (tic-tac-toe) and 5.4x (Pendulum) faster. `FALSE` runs the ordinary path.
+#' @param pool `NULL` (plain self-play, the default), `TRUE` or a list with
+#'   any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
+#'   against a pool of past policies, for two-player self-play environments
+#'   only. Every `every` iterations the weights are copied into the pool
+#'   (oldest dropped beyond `size`). At the start of each rollout every game
+#'   independently plays self-play with probability `p_self`, otherwise
+#'   against one snapshot drawn uniformly from the pool for that rollout, with
+#'   the learner's side (X or O) drawn independently per game. GAE runs over
+#'   the full trajectories (the learner's value net also scores the opponent's
+#'   positions, the value being from the side to move); the snapshot's moves
+#'   are then dropped and the rest randomly trimmed to a multiple of
+#'   `minibatch` (of 64 below it), so update shapes stay fixed. Adds the
+#'   history columns `used` (transitions trained on), `pool_games` (finished
+#'   games against the pool), `pool_win` and `pool_loss` (the learner's share of
+#'   wins and of losses in them, the rest draws) and `pool_win_x`, `pool_win_o`
+#'   (the share of wins with the learner as X / as O); `NA` when no games.
 #' @return An [rl_algo()].
 #' @seealso [rl_train()], [rl_ppo_train()]
 #' @export
@@ -214,7 +230,9 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                    gamma = 0.99, lambda = 0.95, clip = 0.2, vf_coef = 0.5,
                    ent_coef = 0.03, hidden = 64, normalize_obs = NULL,
                    normalize_reward = NULL, clip_obs = 10, clip_reward = 10,
-                   epsilon = 1e-8, max_grad_norm = NULL, capture = TRUE) {
+                   epsilon = 1e-8, max_grad_norm = NULL, capture = TRUE,
+                   pool = NULL) {
+  pool <- ppo_pool_args(pool)
   if (!is.null(max_grad_norm) &&
       (!is.numeric(max_grad_norm) || length(max_grad_norm) != 1L ||
        !is.finite(max_grad_norm) || max_grad_norm <= 0))
@@ -240,13 +258,51 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                  normalize_obs = if (is.null(normalize_obs)) box else isTRUE(normalize_obs),
                  normalize_reward = if (is.null(normalize_reward)) box else isTRUE(normalize_reward))
     if (box) meta$act_dim <- space_size(sp) else meta$n_actions <- sp$n
+    self_play <- identical(env$opponent, "self")
+    if (!is.null(pool) && (box || !self_play))
+      stop("PPO `pool` needs a discrete two-player self-play environment ",
+           "(rl_gpu_env(..., opponent = \"self\"))", call. = FALSE)
     net <- ppo_build(meta)
     list(net = net, opt = optimizer_adam(net$parameters(), lr = lr),
          meta = meta, device = device, box = box,
-         turn_sign = if (identical(env$opponent, "self")) -1 else 1,
+         turn_sign = if (self_play) -1 else 1,
          obs_rms = running_stats(obs_dim), rew_rms = running_stats(1L),
          obs = NULL, legal = NULL, ret_track = NULL, rollout = NULL, updates = 0,
-         captures = new.env(parent = emptyenv()))
+         captures = new.env(parent = emptyenv()),
+         # fictitious self-play: host snapshots, their ids, rollouts so far,
+         # moves since reset per game, the opponent net and its loaded id
+         pool = list(), pool_ids = integer(), pool_next = 1L, iters = 0L,
+         ply = NULL, opp_net = NULL, opp_id = NA_integer_)
+  }
+
+  # FSP bookkeeping at the start of a rollout: snapshot every `every`
+  # iterations, then per game self-play or the pool (one snapshot per
+  # rollout) and the learner's side. Returns the state and the assignment.
+  pool_start <- function(state, n_env) {
+    if (state$iters %% pool$every == 0L) {
+      state$pool <- c(state$pool, list(save_net(state$net)))
+      state$pool_ids <- c(state$pool_ids, state$pool_next)
+      state$pool_next <- state$pool_next + 1L
+      if (length(state$pool) > pool$size) {
+        state$pool <- state$pool[-1L]
+        state$pool_ids <- state$pool_ids[-1L]
+      }
+    }
+    state$iters <- state$iters + 1L
+    vs_pool <- stats::runif(n_env) >= pool$p_self
+    side <- sample.int(2L, n_env, replace = TRUE) - 1L   # 0: learner is X
+    if (any(vs_pool)) {
+      k <- sample.int(length(state$pool), 1L)
+      id <- state$pool_ids[k]
+      if (is.null(state$opp_net)) {
+        state$opp_net <- load_net(state$pool[[k]], function() ppo_build(state$meta),
+                                  state$device)
+      } else if (!identical(state$opp_id, id)) {
+        ag_load_state_dict(state$opp_net, state$pool[[k]])
+      }
+      state$opp_id <- id
+    }
+    list(state = state, vs_pool = vs_pool, side = side)
   }
 
   collect <- function(state, env) {
@@ -260,6 +316,17 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       state$obs <- rl_reset(env)
       state$legal <- if (!box) legal_of(env, NULL, meta$n_actions)
       state$ret_track <- numeric(n_env)
+      state$ply <- integer(n_env)
+    }
+    fsp <- !is.null(pool)
+    if (fsp) {
+      ps <- pool_start(state, n_env)
+      state <- ps$state
+      vs_pool <- ps$vs_pool
+      b_keep <- matrix(TRUE, n_env, n_steps)
+      pool_games <- 0
+      pool_wins <- pool_losses <- 0
+      side_games <- side_wins <- c(x = 0, o = 0)   # by the learner's side
     }
     # one normalization for the whole rollout, used again in update()
     norm <- obs_norm(state)
@@ -294,6 +361,14 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         b_logp[, t] <- gauss_logp(a, mu, log_std)
       } else {
         logits <- out$logits
+        if (fsp) {
+          # the snapshot moves where it is its side's turn (X at even plies)
+          opp <- vs_pool & (state$ply %% 2L) != ps$side
+          if (any(opp)) {
+            logits[, opp] <- policy_forward(state$opp_net, x, norm)$logits[, opp, drop = FALSE]
+          }
+          b_keep[, t] <- !opp
+        }
         tk <- prof_tick(tk, "collect: download")
         logp_all <- host_logp(logits, t(legal) * 1)
         a <- ag_sample_categorical(logp_all)
@@ -328,6 +403,18 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       }
       b_done[, t] <- as.numeric(done)
       n_done <- n_done + sum(done)
+      if (fsp) {
+        # reward is for the side that just moved
+        ended <- vs_pool & r$terminated
+        pool_games <- pool_games + sum(ended)
+        pool_wins <- pool_wins + sum(ended & ifelse(opp, r$reward < 0, r$reward > 0))
+        pool_losses <- pool_losses + sum(ended & ifelse(opp, r$reward > 0, r$reward < 0))
+        won <- ended & ifelse(opp, r$reward < 0, r$reward > 0)
+        as_x <- ps$side == 0L
+        side_games <- side_games + c(sum(ended & as_x), sum(ended & !as_x))
+        side_wins <- side_wins + c(sum(won & as_x), sum(won & !as_x))
+        state$ply <- ifelse(done, 0L, state$ply + 1L)
+      }
       obs <- r$obs
       if (!box) legal <- legal_of(env, r$legal, meta$n_actions)
       tk <- prof_tick(tk, "collect: buffer")
@@ -355,13 +442,35 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       legal = if (!box) matrix(b_legal, meta$n_actions, N),
       logp = as.numeric(b_logp), adv = as.numeric(adv), ret = as.numeric(ret),
       norm = norm)
+    if (fsp) {
+      # after GAE over the full trajectories: drop the snapshot's moves, then
+      # a random subset of the rest so the count is a multiple of minibatch
+      # (of 64 below it) -- fixed update shapes for the captured graphs
+      keep <- which(as.logical(b_keep))
+      n_use <- length(keep)
+      n_use <- if (n_use >= minibatch) n_use %/% minibatch * minibatch else
+        max(min(n_use, 64L), n_use %/% 64L * 64L)
+      if (n_use < length(keep)) keep <- sort(keep[sample.int(length(keep), n_use)])
+      ro <- state$rollout
+      ro$obs <- ro$obs[, keep, drop = FALSE]
+      ro$legal <- ro$legal[, keep, drop = FALSE]
+      ro[c("act", "logp", "adv", "ret")] <- lapply(ro[c("act", "logp", "adv", "ret")],
+                                                   function(v) v[keep])
+      state$rollout <- ro
+    }
     # statistics move only now, after GAE and the bootstrap used the old ones
     if (meta$normalize_obs) state$obs_rms <- running_stats_update(state$obs_rms, state$rollout$obs)
     if (meta$normalize_reward) state$rew_rms <- running_stats_update(state$rew_rms, matrix(b_ret, 1L))
     state$obs <- obs
     state$legal <- legal
     prof_tick(tk, "collect: gae")
-    list(state = state, steps = N, info = c(episodes = n_done))
+    info <- c(episodes = n_done)
+    if (fsp) info <- c(info, used = length(state$rollout$logp), pool_games = pool_games,
+                       pool_win = if (pool_games > 0) pool_wins / pool_games else NA_real_,
+                       pool_loss = if (pool_games > 0) pool_losses / pool_games else NA_real_,
+                       pool_win_x = if (side_games[[1]] > 0) side_wins[[1]] / side_games[[1]] else NA_real_,
+                       pool_win_o = if (side_games[[2]] > 0) side_wins[[2]] / side_games[[2]] else NA_real_)
+    list(state = state, steps = N, info = info)
   }
 
   update <- function(state) {
@@ -415,7 +524,8 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
   get_train_state <- function(state) {
     list(weights = save_net(state$net), optimizer_state = state$opt$state(),
          normalizers = list(obs = state$obs_rms, reward = state$rew_rms),
-         counters = list(updates = state$updates))
+         counters = list(updates = state$updates),
+         pool = if (!is.null(pool)) state[c("pool", "pool_ids", "pool_next", "iters")])
   }
 
   set_train_state <- function(state, train_state) {
@@ -439,8 +549,14 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     state$obs_rms <- train_state$normalizers$obs
     state$rew_rms <- train_state$normalizers$reward
     state$updates <- train_state$counters$updates
+    if (!is.null(pool) && !is.null(train_state$pool)) {
+      state[c("pool", "pool_ids", "pool_next", "iters")] <- train_state$pool
+    }
+    # the opponent net is rebuilt from the pool on demand
+    state["opp_net"] <- list(NULL)
+    state$opp_id <- NA_integer_
     # keep the fields (as NULL): `$` would partially match obs -> obs_rms
-    state[c("obs", "legal", "ret_track", "rollout")] <- list(NULL)
+    state[c("obs", "legal", "ret_track", "rollout", "ply")] <- list(NULL)
     state
   }
 
@@ -452,7 +568,28 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                         normalize_obs = normalize_obs,
                         normalize_reward = normalize_reward, clip_obs = clip_obs,
                         clip_reward = clip_reward, epsilon = epsilon,
-                        max_grad_norm = max_grad_norm, capture = capture))
+                        max_grad_norm = max_grad_norm, capture = capture,
+                        pool = pool))
+}
+
+# Validated FSP settings: NULL (off) or list(p_self, every, size).
+ppo_pool_args <- function(pool) {
+  if (is.null(pool) || isFALSE(pool)) return(NULL)
+  if (isTRUE(pool)) pool <- list()
+  if (!is.list(pool) || length(setdiff(names(pool), c("p_self", "every", "size"))) ||
+      (length(pool) && is.null(names(pool))))
+    stop("`pool` must be NULL, TRUE or a list with p_self, every and/or size",
+         call. = FALSE)
+  pool <- utils::modifyList(list(p_self = 0.8, every = 10L, size = 20L), pool)
+  ok_num <- function(x) is.numeric(x) && length(x) == 1L && is.finite(x)
+  if (!ok_num(pool$p_self) || pool$p_self < 0 || pool$p_self > 1)
+    stop("pool$p_self must be one number in [0, 1]", call. = FALSE)
+  for (nm in c("every", "size")) {
+    if (!ok_num(pool[[nm]]) || pool[[nm]] < 1 || pool[[nm]] != round(pool[[nm]]))
+      stop("pool$", nm, " must be one positive whole number", call. = FALSE)
+    pool[[nm]] <- as.integer(pool[[nm]])
+  }
+  pool
 }
 
 # PPO network for model metadata; files without action_type are discrete.
@@ -508,7 +645,7 @@ rl_ppo_train <- function(env, iterations = 100, n_steps = 9, epochs = 4,
                          eval_fn = NULL, verbose = TRUE, log = NULL,
                          overwrite = FALSE, checkpoint = NULL,
                          checkpoint_every = 0, resume = NULL, append = FALSE,
-                         max_grad_norm = NULL, capture = TRUE) {
+                         max_grad_norm = NULL, capture = TRUE, pool = NULL) {
   env <- as_vec_env(env)
   per_iter <- n_steps * env$n
   algo <- rl_ppo(n_steps = n_steps, epochs = epochs, minibatch = minibatch,
@@ -517,7 +654,7 @@ rl_ppo_train <- function(env, iterations = 100, n_steps = 9, epochs = 4,
                  normalize_obs = normalize_obs,
                  normalize_reward = normalize_reward, clip_obs = clip_obs,
                  clip_reward = clip_reward, epsilon = epsilon,
-                 max_grad_norm = max_grad_norm, capture = capture)
+                 max_grad_norm = max_grad_norm, capture = capture, pool = pool)
   rl_train(env, algo, total_steps = iterations * per_iter, device = device,
            eval_every_steps = eval_every * per_iter, eval_fn = eval_fn,
            verbose = verbose, log = log, overwrite = overwrite,
@@ -674,13 +811,15 @@ ppo_free_captures <- function(captures) {
 
 #' Evaluate a tic-tac-toe policy against a random opponent
 #'
-#' Plays `n` games as X against a uniformly random opponent with the greedy
+#' Plays `n` games against a uniformly random opponent with the greedy
 #' policy and reports the fractions of wins, draws and losses.
 #'
 #' @param model Result of [rl_ppo_train()] or [rl_load_model()].
 #' @param n Number of games.
 #' @param device Device for the evaluation environment: the CPU by default,
 #'   whatever the model's device (see [rl_gpu_env()] for why).
+#' @param side `"X"` (the default: the policy moves first) or `"O"` (the
+#'   random opponent moves first; its moves use R's RNG).
 #' @return Named numeric vector `win`, `draw`, `loss`.
 #' @export
 #' @examples
@@ -688,8 +827,11 @@ ppo_free_captures <- function(captures) {
 #' env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
 #' m <- rl_ppo_train(env, iterations = 5, device = "cpu", verbose = FALSE)
 #' rl_ppo_eval_tictactoe(m, n = 200)
+#' rl_ppo_eval_tictactoe(m, n = 200, side = "O")
 #' }
-rl_ppo_eval_tictactoe <- function(model, n = 512, device = "cpu") {
+rl_ppo_eval_tictactoe <- function(model, n = 512, device = "cpu", side = c("X", "O")) {
+  side <- match.arg(side)
+  if (side == "O") return(ttt_eval_as_o(model, n, device))
   env <- rl_gpu_env("tictactoe", n = n, opponent = "random", device = device)
   obs <- rl_reset(env)
   legal <- rl_legal_actions(env)
@@ -699,6 +841,36 @@ rl_ppo_eval_tictactoe <- function(model, n = 512, device = "cpu") {
     r <- rl_step(env, a)
     first <- is.na(result) & r$terminated
     result[first] <- r$reward[first]
+    if (!anyNA(result)) break
+    obs <- r$obs
+    legal <- r$legal
+  }
+  c(win = mean(result == 1), draw = mean(result == 0), loss = mean(result == -1))
+}
+
+# The policy as O: a self-play environment where X's moves are drawn
+# uniformly from the legal ones on the host. All games start together, so
+# plies stay in step until each game's first end (later restarts are
+# ignored); the reward is for the side that just moved.
+ttt_eval_as_o <- function(model, n, device) {
+  env <- rl_gpu_env("tictactoe", n = n, opponent = "self", device = device)
+  obs <- rl_reset(env)
+  legal <- rl_legal_actions(env)
+  result <- rep(NA_real_, n)
+  for (ply in 0:8) {
+    if (ply %% 2L == 0L) {
+      a <- apply(legal, 1L, function(l) {
+        w <- which(l)
+        w[sample.int(length(w), 1L)] - 1L
+      })
+      sign <- -1    # X just moved: its win is O's loss
+    } else {
+      a <- rl_act(model, obs, legal, greedy = TRUE)
+      sign <- 1
+    }
+    r <- rl_step(env, as.integer(a))
+    first <- is.na(result) & r$terminated
+    result[first] <- sign * r$reward[first]
     if (!anyNA(result)) break
     obs <- r$obs
     legal <- r$legal

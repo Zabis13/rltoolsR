@@ -4,7 +4,7 @@
 \alias{rl_ppo_eval_tictactoe}
 \title{Evaluate a tic-tac-toe policy against a random opponent}
 \usage{
-rl_ppo_eval_tictactoe(model, n = 512, device = "cpu")
+rl_ppo_eval_tictactoe(model, n = 512, device = "cpu", side = c("X", "O"))
 }
 \arguments{
 \item{model}{Result of [rl_ppo_train()] or [rl_load_model()].}
@@ -13,12 +13,15 @@ rl_ppo_eval_tictactoe(model, n = 512, device = "cpu")
 
 \item{device}{Device for the evaluation environment: the CPU by default,
 whatever the model's device (see [rl_gpu_env()] for why).}
+
+\item{side}{`"X"` (the default: the policy moves first) or `"O"` (the
+random opponent moves first; its moves use R's RNG).}
 }
 \value{
 Named numeric vector `win`, `draw`, `loss`.
 }
 \description{
-Plays `n` games as X against a uniformly random opponent with the greedy
+Plays `n` games against a uniformly random opponent with the greedy
 policy and reports the fractions of wins, draws and losses.
 }
 \examples{
@@ -26,5 +29,6 @@ policy and reports the fractions of wins, draws and losses.
 env <- rl_gpu_env("tictactoe", n = 64, device = "cpu")
 m <- rl_ppo_train(env, iterations = 5, device = "cpu", verbose = FALSE)
 rl_ppo_eval_tictactoe(m, n = 200)
+rl_ppo_eval_tictactoe(m, n = 200, side = "O")
 }
 }

@@ -5,8 +5,12 @@
 # The model is always saved to /tmp (only the file name is taken from the
 # argument).
 #
-# Training uses the GPU when a Vulkan device is available, otherwise the CPU.
-# The saved model is then loaded on the CPU and played against a random
+# The environment runs on the CPU (the rl_gpu_env() default: faster collect);
+# the policy trains on the GPU when a Vulkan device is available, otherwise
+# the CPU (bench_cpu_gpu.R: ~36 vs ~98 ms per iteration with capture).
+# Every 10 iterations the policy plays 1000 games against a random opponent
+# and the best one so far is saved (progress is printed at these evals only).
+# The best model is then loaded on the CPU and played against a random
 # opponent; one game is printed move by move.
 
 library(rltoolsR)
@@ -18,16 +22,38 @@ path <- file.path("/tmp", basename(if (length(args)) args[1] else "tictactoe_ppo
 set.seed(1)
 env <- rl_gpu_env("tictactoe", n = 256, opponent = "self")   # env on the CPU (default)
 print(env)
-model <- rl_ppo_train(env, iterations = 100, minibatch = 2024, hidden = 64,
-                      device = env$device, verbose = TRUE)
-rl_save_model(model, path)
-cat("saved:", path, "\n\n")
+# every eval_every iterations: play 1000 games vs random, keep the best model
+# (score = win - loss) in `path`; the last one goes to *_last.rds
+best <- -Inf
+eval_best <- function(m) {
+  res <- rl_ppo_eval_tictactoe(m, n = 1000, device = "cpu")
+  score <- res[["win"]] - res[["loss"]]
+  if (score > best) {
+    best <<- score
+    rl_save_model(m, path)
+  }
+  res_o <- rl_ppo_eval_tictactoe(m, n = 1000, device = "cpu", side = "O")
+  c(res, best = best, o_win = res_o[["win"]], o_draw = res_o[["draw"]],
+    o_loss = res_o[["loss"]])
+}
+t0 <- Sys.time()
+model <- rl_ppo_train(env, iterations = 300, device = "auto", verbose = TRUE,
+                      pool = TRUE,   # fictitious self-play: 80% self, 20% past snapshots
+                      eval_every = 10, eval_fn = eval_best)
+cat(sprintf("training (with evals): %.1f s\n",
+            as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+path_last <- sub("(\\.rds)?$", "_last.rds", path)
+rl_save_model(model, path_last)
+cat(sprintf("saved: best (win - loss %.3f) %s, last %s\n\n", best, path, path_last))
 
 # ---- load and run on CPU ----
 m <- rl_load_model(path, device = "cpu")
 res <- rl_ppo_eval_tictactoe(m, n = 1000, device = "cpu")
-cat(sprintf("vs random (1000 games): win %.1f%%, draw %.1f%%, loss %.1f%%\n\n",
+cat(sprintf("vs random as X (1000 games): win %.1f%%, draw %.1f%%, loss %.1f%%\n",
             100 * res["win"], 100 * res["draw"], 100 * res["loss"]))
+res_o <- rl_ppo_eval_tictactoe(m, n = 1000, device = "cpu", side = "O")
+cat(sprintf("vs random as O (1000 games): win %.1f%%, draw %.1f%%, loss %.1f%%\n\n",
+            100 * res_o["win"], 100 * res_o["draw"], 100 * res_o["loss"]))
 
 show_board <- function(obs) {
   s <- ifelse(obs > 0, "X", ifelse(obs < 0, "O", "."))
