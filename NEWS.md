@@ -1,3 +1,8 @@
+# rltoolsR 0.1.2
+
+* New `rl_gpu_env("cube", n, size)` — N×N×N Rubik's cube on GPU/CPU, and `rl_cube_walks()` for labelled random walks.
+* New CartPole-v1 environment, on the CPU and on the GPU.
+
 # rltoolsR 0.1.1
 
 * New `rl_evaluate()` — mean return and length over N episodes on a vectorized environment, deterministic policy by default, one episode per seeded slot (independent of the number of copies), truncated episodes flagged; per-episode results in the `episodes` attribute. Usable as `eval_fn` in `rl_train()`.

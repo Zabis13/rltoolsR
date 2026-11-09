@@ -1,6 +1,6 @@
 # Train a small PPO policy on tic-tac-toe, save it, load it back and run it.
 #
-#   Rscript inst/examples/train_and_run_tictactoe.R [model.rds]
+#   Rscript inst/examples/train_and_run_tictactoe.R [model.rds] [ent_coef]
 #
 # The model is always saved to /tmp (only the file name is taken from the
 # argument).
@@ -17,6 +17,8 @@ library(rltoolsR)
 
 args <- commandArgs(trailingOnly = TRUE)
 path <- file.path("/tmp", basename(if (length(args)) args[1] else "tictactoe_ppo.rds"))
+ent_coef <- if (length(args) >= 2) as.numeric(args[2]) else 0.03   # rl_ppo default
+cat("ent_coef:", ent_coef, "\n")
 
 # ---- train ----
 set.seed(1)
@@ -39,6 +41,7 @@ eval_best <- function(m) {
 t0 <- Sys.time()
 model <- rl_ppo_train(env, iterations = 300, device = "auto", verbose = TRUE,
                       pool = TRUE,   # fictitious self-play: 80% self, 20% past snapshots
+                      ent_coef = ent_coef,
                       eval_every = 10, eval_fn = eval_best)
 cat(sprintf("training (with evals): %.1f s\n",
             as.numeric(difftime(Sys.time(), t0, units = "secs"))))

@@ -49,14 +49,27 @@ ttt_full <- function(ctx, board) {
 #' Runs `n` copies of an environment as a ggml compute graph on the GPU
 #' (Vulkan) or CPU. The state stays on the device between steps.
 #'
-#' Currently available: `"tictactoe"`. Observations are canonical: the
+#' `"tictactoe"`: observations are canonical: the
 #' side to move sees its own marks as `+1` and the opponent's as `-1`.
 #' Actions are cell indices `0..8` (row-major). An illegal move ends the
 #' game with reward `-1`. Finished games are reset in the same step.
 #'
-#' @param name Environment name.
+#' `"cube"`: the `size` x `size` x `size` cube, one player. Observations are
+#' one-hot colours of the `6 size^2` stickers (sticker index fastest), actions
+#' the `6 size` quarter turns of one layer (`env$move_names`; move `a` and
+#' `bitwXor(a, 1)` are inverses). Reward is 1 when the cube is solved
+#' (`terminated`), else 0; `truncated` after `max_steps` moves. Reset and
+#' finished games start from `scramble` random moves without immediate undo.
+#' See [rl_cube_walks()] for labelled training data.
+#'
+#' `"cartpole"`: CartPole-v1, the physics of `rl_env("cartpole")` in f32 on the
+#' device; actions 0 (left) / 1 (right), reward 1 per step, `truncated` after
+#' 500 steps, auto-reset with `final_obs`. Initial states use R's RNG.
+#'
+#' @param name Environment name: `"tictactoe"`, `"cube"` or `"cartpole"`.
 #' @param n Number of parallel games.
-#' @param opponent `"self"`: both sides are played by the caller, the side
+#' @param opponent Tic-tac-toe only (ignored otherwise).
+#'   `"self"`: both sides are played by the caller, the side
 #'   to move alternates and `reward` is for the side that just moved.
 #'   `"random"`: the caller always plays X and a uniformly random legal
 #'   opponent answers inside the same graph; `reward` is for X. Its moves
@@ -69,21 +82,35 @@ ttt_full <- function(ctx, board) {
 #'   CPU against 8.7 ms on the GPU, which made GPU collection slower than CPU
 #'   collection (18.7 against 15.2 ms). The GPU pays off once the rollout stays
 #'   on the device.
-#' @return An object of class `rl_gpu_env`.
+#' @param size,scramble,max_steps Cube only: edge length, scramble depth of
+#'   reset games and the step limit.
+#' @return An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole`
+#'   first for those environments).
 #' @export
 #' @examples
 #' \donttest{
 #' env <- rl_gpu_env("tictactoe", n = 4, device = "cpu")
 #' obs <- rl_reset(env)
 #' res <- rl_step(env, c(0, 4, 8, 2))
+#'
+#' cube <- rl_gpu_env("cube", n = 4, size = 3, scramble = 5, device = "cpu")
+#' cube$move_names
+#' res <- rl_step(cube, c(0, 2, 4, 6))
+#'
+#' cp <- rl_gpu_env("cartpole", n = 4, device = "cpu")
+#' obs <- rl_reset(cp)
+#' res <- rl_step(cp, c(0, 1, 0, 1))
 #' }
 rl_gpu_env <- function(name, n, opponent = c("self", "random"),
-                       device = c("cpu", "auto", "gpu")) {
-  name <- match.arg(name, "tictactoe")
+                       device = c("cpu", "auto", "gpu"),
+                       size = 3L, scramble = 20L, max_steps = 50L) {
+  name <- match.arg(name, c("tictactoe", "cube", "cartpole"))
   opponent <- match.arg(opponent)
   device <- rl_resolve_device(match.arg(device))
   n <- as.integer(n)
   stopifnot(length(n) == 1, !is.na(n), n >= 1)
+  if (name == "cube") return(cube_gpu_env(n, size, scramble, max_steps, device))
+  if (name == "cartpole") return(cartpole_gpu_env(n, device))
 
   st <- new.env(parent = emptyenv())
   st$n <- n

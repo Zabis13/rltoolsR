@@ -11,6 +11,7 @@
 namespace rltr {
 
 Env* make_pendulum(int64_t seed);
+Env* make_cartpole(int64_t seed);
 Env* make_acrobot(int64_t seed);
 Env* make_acrobot_swingup(int64_t seed);
 Env* make_car(int64_t seed);
@@ -18,6 +19,7 @@ Env* make_car_track(int64_t seed);
 
 Env* make_env(const std::string& name, int64_t seed) {
     if (name == "pendulum") return make_pendulum(seed);
+    if (name == "cartpole") return make_cartpole(seed);
     if (name == "acrobot") return make_acrobot(seed);
     if (name == "acrobot_swingup") return make_acrobot_swingup(seed);
     if (name == "car") return make_car(seed);
@@ -26,7 +28,7 @@ Env* make_env(const std::string& name, int64_t seed) {
 }
 
 std::vector<std::string> env_names() {
-    return {"pendulum", "acrobot", "acrobot_swingup", "car", "car_track"};
+    return {"pendulum", "cartpole", "acrobot", "acrobot_swingup", "car", "car_track"};
 }
 
 }  // namespace rltr

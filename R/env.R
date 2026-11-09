@@ -67,11 +67,14 @@ rl_reset.rl_vec_env <- function(env, seed = NULL) {
 #' @param env An `rl_env`, `rl_vec_env` or `rl_gpu_env`.
 #' @param action For `rl_env`, numeric vector matching `env$action_space`.
 #'   For `rl_vec_env`, `n x act_dim` matrix (or length-`n` vector when
-#'   `act_dim` is 1). For `rl_gpu_env`, length-`n` vector of cell indices
-#'   `0..8`.
+#'   `act_dim` is 1). For `rl_gpu_env`, a length-`n` vector of discrete
+#'   actions: cell indices `0..8` (tic-tac-toe), move indices
+#'   `0..length(env$move_names) - 1` (cube) or `0` / `1` (cartpole).
 #' @return List with `obs`, `reward`, `terminated` and `truncated`;
-#'   `rl_vec_env` adds `final_obs`, `rl_gpu_env` adds `legal` (legal-action
-#'   mask for the next move) and `player` (side to move). Vectorized fields
+#'   `rl_vec_env` adds `final_obs`. `rl_gpu_env` adds, by environment:
+#'   tic-tac-toe `legal` (legal-action mask for the next move) and `player`
+#'   (side to move); cube `legal` (all moves) and `final_obs` when a game
+#'   was truncated; cartpole `final_obs` when a game ended. Vectorized fields
 #'   have one row or element per copy.
 #' @export
 #' @examples
@@ -95,8 +98,9 @@ rl_step.rl_vec_env <- function(env, action) {
 #'
 #' @param env An `rl_env`, `rl_vec_env` or `rl_gpu_env`.
 #' @return Logical mask over discrete actions (`n x n_actions` matrix for
-#'   `rl_vec_env` and `rl_gpu_env`), or `NULL` when the action space has no notion of legal
-#'   actions (e.g. continuous `Box`).
+#'   `rl_vec_env` and `rl_gpu_env`), or `NULL` when the environment has no
+#'   notion of legal actions (continuous `Box` actions, CartPole). The cube
+#'   allows every move: an all-`TRUE` matrix.
 #' @export
 #' @examples
 #' # continuous action space: no legal-action mask

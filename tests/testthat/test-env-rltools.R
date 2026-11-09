@@ -1,5 +1,6 @@
 envs <- list(
   pendulum        = list(obs = 3L, act = 1L, max_steps = 200L),
+  cartpole        = list(obs = 4L, act = 1L, max_steps = 500L),
   acrobot         = list(obs = 6L, act = 1L, max_steps = 500L),
   acrobot_swingup = list(obs = 6L, act = 1L, max_steps = 500L),
   car             = list(obs = 6L, act = 2L, max_steps = 1000L),
@@ -12,6 +13,8 @@ test_that("all RLtools environments are registered", {
 
 for (nm in names(envs)) {
   e <- envs[[nm]]
+  # cartpole has discrete actions 0 / 1: positive values push right
+  act <- if (nm == "cartpole") function(x) { x[] <- as.numeric(x > 0); x } else identity
 
   test_that(paste(nm, "spec, reset, step, save/load"), {
     env <- rl_env(nm, seed = 1)
@@ -26,7 +29,7 @@ for (nm in names(envs)) {
     expect_length(o1, e$obs)
     expect_true(all(is.finite(o1)))
 
-    a <- rep(0.1, e$act)
+    a <- act(rep(0.1, e$act))
     r <- rl_step(env, a)
     expect_length(r$obs, e$obs)
     expect_true(is.finite(r$reward))
@@ -44,7 +47,7 @@ for (nm in names(envs)) {
     env <- rl_env(nm, seed = 1)
     expect_null(rl_legal_actions(env))
     rl_reset(env, seed = 3)
-    a <- rep(0.1, e$act)
+    a <- act(rep(0.1, e$act))
     bad <- NA_integer_   # first step with malformed fields
     for (i in seq_len(e$max_steps)) {
       r <- rl_step(env, a)
@@ -65,7 +68,7 @@ for (nm in names(envs)) {
       env <- rl_env(nm, seed = 1)
       rl_reset(env, seed = 5)
       acts <- seq(-1, 1, length.out = 20)
-      lapply(acts, function(x) rl_step(env, rep(x, e$act)))
+      lapply(acts, function(x) rl_step(env, act(rep(x, e$act))))
     }
     expect_equal(run(), run())
   })
@@ -75,7 +78,7 @@ for (nm in names(envs)) {
     singles <- lapply(0:2, function(i) rl_env(nm, seed = 1 + i))
     o <- rl_reset(venv, seed = 1)
     for (i in 1:3) expect_equal(o[i, ], rl_reset(singles[[i]], seed = i))
-    a <- matrix(c(-0.5, 0, 0.5), 3, e$act)
+    a <- act(matrix(c(-0.5, 0, 0.5), 3, e$act))
     for (t in 1:5) {
       r <- rl_step(venv, if (e$act == 1L) a[, 1] else a)
       for (i in 1:3) {
@@ -110,4 +113,17 @@ test_that("car_track lidar observations are in [0, 1]", {
   env <- rl_env("car_track", seed = 1)
   o <- rl_reset(env)
   expect_true(all(o[7:9] >= 0 & o[7:9] <= 1))
+})
+
+test_that("cartpole gives 1 per step and terminates when the pole falls", {
+  env <- rl_env("cartpole", seed = 1)
+  rl_reset(env)
+  for (i in seq_len(500)) {
+    r <- rl_step(env, 1)
+    expect_equal(r$reward, 1)
+    if (r$terminated || r$truncated) break
+  }
+  expect_true(r$terminated)
+  expect_lt(i, 100)
+  expect_error(rl_step(env, 0.5), "0 or 1")
 })

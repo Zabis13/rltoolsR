@@ -1,4 +1,4 @@
-// Continuous-control environments: pendulum, acrobot, car.
+// Control environments: pendulum, cartpole, acrobot, car.
 // Ported from RLtools (https://github.com/rl-tools/rl-tools,
 // include/rl_tools/rl/environments/{pendulum,acrobot,car}); the acrobot dynamics
 // follow Gymnasium v0.28.1 classic_control/acrobot.py. Physics in float, RNG is
@@ -131,6 +131,60 @@ struct Pendulum {
         o[0] = std::cos(s.theta);
         o[1] = std::sin(s.theta);
         o[2] = s.theta_dot;
+    }
+};
+
+// ---------------------------------------------------------------- cartpole
+
+// Gymnasium CartPole-v1 (classic_control/cartpole.py): Euler integration,
+// float64 physics, actions 0 (push left) / 1 (push right), reward 1 every
+// step including the last, terminates when |x| > 2.4 or |theta| > 12 degrees,
+// 500 steps. Initial state uniform in [-0.05, 0.05]^4.
+struct CartPole {
+    using D = double;
+    static constexpr int OBS_DIM = 4, ACTION_DIM = 1, STEP_LIMIT = 500;
+    static constexpr D gravity = 9.8, masscart = 1.0, masspole = 0.1;
+    static constexpr D total_mass = masspole + masscart;
+    static constexpr D length = 0.5, polemass_length = masspole * length;
+    static constexpr D force_mag = 10.0, tau = 0.02;
+    static constexpr D theta_threshold = 12 * 2 * 3.14159265358979323846 / 360;
+    static constexpr D x_threshold = 2.4;
+
+    struct State { D x, x_dot, theta, theta_dot; };
+
+    void sample_initial_state(State& s, RNG& rng) const {
+        s.x = uniform<D>(-0.05, 0.05, rng);
+        s.x_dot = uniform<D>(-0.05, 0.05, rng);
+        s.theta = uniform<D>(-0.05, 0.05, rng);
+        s.theta_dot = uniform<D>(-0.05, 0.05, rng);
+    }
+
+    void step(const State& s, const T* a, State& next) const {
+        if (a[0] != 0 && a[0] != 1) throw std::invalid_argument("cartpole: action must be 0 or 1");
+        const D force = a[0] == 1 ? force_mag : -force_mag;
+        const D c = std::cos(s.theta), sn = std::sin(s.theta);
+        const D temp = (force + polemass_length * s.theta_dot * s.theta_dot * sn) / total_mass;
+        const D thetaacc = (gravity * sn - c * temp) /
+                           (length * (4.0 / 3.0 - masspole * c * c / total_mass));
+        const D xacc = temp - polemass_length * thetaacc * c / total_mass;
+        next.x = s.x + tau * s.x_dot;
+        next.x_dot = s.x_dot + tau * xacc;
+        next.theta = s.theta + tau * s.theta_dot;
+        next.theta_dot = s.theta_dot + tau * thetaacc;
+    }
+
+    T reward(const State&, const T*, const State&) const { return 1; }
+
+    bool terminated(const State& s) const {
+        return s.x < -x_threshold || s.x > x_threshold ||
+               s.theta < -theta_threshold || s.theta > theta_threshold;
+    }
+
+    void observe(const State& s, float* o) const {
+        o[0] = static_cast<float>(s.x);
+        o[1] = static_cast<float>(s.x_dot);
+        o[2] = static_cast<float>(s.theta);
+        o[3] = static_cast<float>(s.theta_dot);
     }
 };
 
@@ -336,6 +390,14 @@ Space box(std::vector<double> low, std::vector<double> high) {
     return s;
 }
 
+Space discrete(int n) {
+    Space s;
+    s.type = SpaceType::Discrete;
+    s.dtype = DType::Int32;
+    s.n = n;
+    return s;
+}
+
 EnvSpec make_spec(const std::string& name, int max_steps, Space obs, Space act) {
     EnvSpec s;
     s.name = name;
@@ -361,6 +423,14 @@ Env* make_pendulum(int64_t seed) {
         "pendulum", Pendulum::STEP_LIMIT,
         box({-1, -1, -Pendulum::max_speed}, {1, 1, Pendulum::max_speed}),
         box({-1}, {1})));
+}
+
+Env* make_cartpole(int64_t seed) {
+    const double t2 = 2 * CartPole::theta_threshold, x2 = 2 * CartPole::x_threshold;
+    return new ControlEnv<CartPole>(seed, make_spec(
+        "cartpole", CartPole::STEP_LIMIT,
+        box({-x2, -INF, -t2, -INF}, {x2, INF, t2, INF}),
+        discrete(2)));
 }
 
 Env* make_acrobot(int64_t seed) { return make_acrobot_impl<false>("acrobot", seed); }

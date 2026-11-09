@@ -4,7 +4,7 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
 
 > Not to be confused with [Rtools](https://cran.r-project.org/bin/windows/Rtools/), the R build toolchain for Windows.
 
-> Status: early development (v0.1.1). The API is not stable yet.
+> Status: early development (v0.1.2). The API is not stable yet.
 
 ## Features
 
@@ -13,9 +13,11 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
   - `rl_env(name)`: continuous control in C++, ported from [RLtools](https://github.com/rl-tools/rl-tools): `pendulum`, `acrobot`, `acrobot_swingup`, `car`, `car_track`
   - `rl_vec_env(name, n)`: `n` copies stepped in one call, auto-reset with `final_obs`
   - `rl_gpu_env("tictactoe", n)`: batched tic-tac-toe as a ggml graph on GPU/CPU, self-play or random opponent
+  - `rl_gpu_env("cube", n, size = 3)`: batched N x N x N Rubik's cube as a ggml graph on GPU/CPU, one-hot sticker colours, `6 N` quarter turns, auto-reset to new scrambles; `rl_cube_walks()` for labelled random walks (prev/next moves, `no_undo` / `no_cancel`)
   - Common API: `rl_reset()`, `rl_step()`, `rl_legal_actions()`, `rl_save_state()` / `rl_load_state()`
   - Gymnasium-style spaces: `space_box()`, `space_discrete()`, `space_multi_discrete()`, `space_multi_binary()`, `space_dict()`
-- PPO (`rl_ppo()`, `rl_ppo_train()`): discrete actions with legal-action masking and self-play, continuous actions with a Gaussian policy; observation and reward normalization
+- PPO (`rl_ppo()`, `rl_ppo_train()`): discrete actions with legal-action masking and self-play, continuous actions with a Gaussian policy; observation and reward normalization; fictitious self-play against a pool of past policies (`pool`)
+- Cube Q-model (`rl_cube_q()`): online training on fresh walks, one value per move (predicted distance to solved), MLP with residual blocks; `rl_cube_q_values()`, `rl_cube_q_eval()` (pair / top1 accuracy by depth)
 - Training loop `rl_train()` for any `rl_algo()` (write your own): step budget, evaluation during training on its own RNG stream, CSV logs written while training runs, atomic checkpoints with the full training state (weights, normalizer statistics, Adam moments, RNG streams) and resume
 - Models: `rl_save_model()` / `rl_load_model()` (train on GPU, run on CPU), `rl_act()`, `rl_save_checkpoint()`
 - Evaluation `rl_evaluate()`: mean return and episode length over N episodes, reproducible seeded episodes, per-episode results; greedy or sampled actions (each episode samples from its own RNG stream, so results do not depend on the batch size); usable as `eval_fn` in `rl_train()`
@@ -42,6 +44,9 @@ Scripts in `inst/examples`:
 - `train_and_run_pendulum.R`: PPO with a Gaussian policy on Pendulum
 - `play_tictactoe.R`: play against a saved model, `Rscript play_tictactoe.R model.rds O`
 - `check_collect_cpu_gpu.R`: PPO rollouts on the GPU against the CPU, same weights and seed
+- `check_cube.R`: cube move tables, environment and walk generator checks
+- `train_cube3_q.R`: train a 3x3x3 Q-model online, `Rscript train_cube3_q.R depth=10 updates=2000`
+- `diag_cube3_q_solve.R`: solve scrambles of growing depth with beam search over a Q-model, summary by depth
 
 ## Vignettes
 

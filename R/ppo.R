@@ -8,7 +8,43 @@
 # $parameters()), so it can be saved with ag_save_model(). The optimizer gets
 # the same named list: ggmlR matches parameters by name, unnamed or duplicate
 # names are silently not updated.
+#
+# Discrete actions use the standard PPO MLP (as ppo_box_net and SB3): separate
+# policy and value networks, two tanh layers each, orthogonal init with gain
+# sqrt(2) for hidden layers, 0.01 for the logits (near-uniform start) and 1 for
+# the value, linear heads. meta$net_arch = "separate" marks it.
 ppo_net <- function(obs_dim, n_actions, hidden) {
+  a1 <- ag_linear(obs_dim, hidden, "tanh", init = "orthogonal", gain = sqrt(2))
+  a2 <- ag_linear(hidden, hidden, "tanh", init = "orthogonal", gain = sqrt(2))
+  pi <- ag_linear(hidden, n_actions, init = "orthogonal", gain = 0.01)
+  c1 <- ag_linear(obs_dim, hidden, "tanh", init = "orthogonal", gain = sqrt(2))
+  c2 <- ag_linear(hidden, hidden, "tanh", init = "orthogonal", gain = sqrt(2))
+  v  <- ag_linear(hidden, 1L, init = "orthogonal", gain = 1)
+  forward <- function(x) {
+    list(logits = pi$forward(a2$forward(a1$forward(x))),
+         value = v$forward(c2$forward(c1$forward(x))))
+  }
+  parameters <- function() list(
+    a1_W = a1$W, a1_b = a1$b, a2_W = a2$W, a2_b = a2$b, pi_W = pi$W, pi_b = pi$b,
+    c1_W = c1$W, c1_b = c1$b, c2_W = c2$W, c2_b = c2$b, v_W = v$W, v_b = v$b
+  )
+  structure(list(forward = forward, parameters = parameters,
+                 captured = new.env(parent = emptyenv())),
+            class = c("rl_ppo_net", "ag_layer"))
+}
+
+ppo_net_shapes <- function(meta) {
+  h <- meta$hidden; o <- meta$obs_dim; a <- meta$n_actions
+  list(a1_W = c(h, o), a1_b = c(h, 1L), a2_W = c(h, h), a2_b = c(h, 1L),
+       pi_W = c(a, h), pi_b = c(a, 1L),
+       c1_W = c(h, o), c1_b = c(h, 1L), c2_W = c(h, h), c2_b = c(h, 1L),
+       v_W = c(1L, h), v_b = c(1L, 1L))
+}
+
+# The discrete network of models saved before meta$net_arch (rltoolsR <=
+# 0.1.1): shared relu trunk, glorot init, tanh value head. Kept so that those
+# files still load and act the same.
+ppo_net_shared <- function(obs_dim, n_actions, hidden) {
   l1 <- ag_linear(obs_dim, hidden, activation = "relu")
   l2 <- ag_linear(hidden, hidden, activation = "relu")
   pi <- ag_linear(hidden, n_actions)
@@ -153,7 +189,10 @@ rl_ppo_act <- rl_act
 #' environment, computes GAE advantages and runs clipped PPO updates with a
 #' ggmlR autograd network.
 #'
-#' Discrete actions use policy and value heads on a shared MLP. If the
+#' Discrete actions use separate policy and value MLPs (two tanh layers of
+#' `hidden` each, orthogonal initialization, linear heads; logits start near
+#' uniform). Models saved by rltoolsR <= 0.1.1 used a shared relu trunk with a
+#' tanh value head; they still load and act as before. If the
 #' environment provides a legal-action mask (in `rl_step()` or
 #' [rl_legal_actions()]), illegal actions are masked out of the policy. For
 #' two-player self-play environments (`rl_gpu_env(..., opponent = "self")`)
@@ -204,10 +243,11 @@ rl_ppo_act <- rl_act
 #'   any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
 #'   against a pool of past policies, for two-player self-play environments
 #'   only. Every `every` iterations the weights are copied into the pool
-#'   (oldest dropped beyond `size`). At the start of each rollout every game
-#'   independently plays self-play with probability `p_self`, otherwise
-#'   against one snapshot drawn uniformly from the pool for that rollout, with
-#'   the learner's side (X or O) drawn independently per game. GAE runs over
+#'   (oldest dropped beyond `size`). Every game, when it starts, independently
+#'   plays self-play with probability `p_self`, otherwise against the pool,
+#'   with the learner's side (X or O) drawn independently; a game keeps both
+#'   until it ends. The pool opponent is one snapshot drawn uniformly per
+#'   rollout. GAE runs over
 #'   the full trajectories (the learner's value net also scores the opponent's
 #'   positions, the value being from the side to move); the snapshot's moves
 #'   are then dropped and the rest randomly trimmed to a multiple of
@@ -257,7 +297,10 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                  action_space = sp,
                  normalize_obs = if (is.null(normalize_obs)) box else isTRUE(normalize_obs),
                  normalize_reward = if (is.null(normalize_reward)) box else isTRUE(normalize_reward))
-    if (box) meta$act_dim <- space_size(sp) else meta$n_actions <- sp$n
+    if (box) meta$act_dim <- space_size(sp) else {
+      meta$n_actions <- sp$n
+      meta$net_arch <- "separate"
+    }
     self_play <- identical(env$opponent, "self")
     if (!is.null(pool) && (box || !self_play))
       stop("PPO `pool` needs a discrete two-player self-play environment ",
@@ -272,12 +315,24 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
          # fictitious self-play: host snapshots, their ids, rollouts so far,
          # moves since reset per game, the opponent net and its loaded id
          pool = list(), pool_ids = integer(), pool_next = 1L, iters = 0L,
-         ply = NULL, opp_net = NULL, opp_id = NA_integer_)
+         ply = NULL, opp_net = NULL, opp_id = NA_integer_,
+         # per game: against the pool or not, the learner's side (0: X);
+         # drawn only when the game starts, so one game keeps one assignment
+         vs_pool = NULL, side = NULL)
+  }
+
+  # draws self-play or the pool and the learner's side for games `idx`
+  pool_assign <- function(state, idx) {
+    if (length(idx)) {
+      state$vs_pool[idx] <- stats::runif(length(idx)) >= pool$p_self
+      state$side[idx] <- sample.int(2L, length(idx), replace = TRUE) - 1L
+    }
+    state
   }
 
   # FSP bookkeeping at the start of a rollout: snapshot every `every`
-  # iterations, then per game self-play or the pool (one snapshot per
-  # rollout) and the learner's side. Returns the state and the assignment.
+  # iterations and the opponent snapshot for this rollout. Mode and side are
+  # drawn per game when it starts (here on the first reset, else in collect).
   pool_start <- function(state, n_env) {
     if (state$iters %% pool$every == 0L) {
       state$pool <- c(state$pool, list(save_net(state$net)))
@@ -289,20 +344,22 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       }
     }
     state$iters <- state$iters + 1L
-    vs_pool <- stats::runif(n_env) >= pool$p_self
-    side <- sample.int(2L, n_env, replace = TRUE) - 1L   # 0: learner is X
-    if (any(vs_pool)) {
-      k <- sample.int(length(state$pool), 1L)
-      id <- state$pool_ids[k]
-      if (is.null(state$opp_net)) {
-        state$opp_net <- load_net(state$pool[[k]], function() ppo_build(state$meta),
-                                  state$device)
-      } else if (!identical(state$opp_id, id)) {
-        ag_load_state_dict(state$opp_net, state$pool[[k]])
-      }
-      state$opp_id <- id
+    if (is.null(state$vs_pool)) {
+      state$vs_pool <- logical(n_env)
+      state$side <- integer(n_env)
+      state <- pool_assign(state, seq_len(n_env))
     }
-    list(state = state, vs_pool = vs_pool, side = side)
+    # loaded always: games that end mid-rollout may be reassigned to the pool
+    k <- sample.int(length(state$pool), 1L)
+    id <- state$pool_ids[k]
+    if (is.null(state$opp_net)) {
+      state$opp_net <- load_net(state$pool[[k]], function() ppo_build(state$meta),
+                                state$device)
+    } else if (!identical(state$opp_id, id)) {
+      ag_load_state_dict(state$opp_net, state$pool[[k]])
+    }
+    state$opp_id <- id
+    state
   }
 
   collect <- function(state, env) {
@@ -317,12 +374,11 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       state$legal <- if (!box) legal_of(env, NULL, meta$n_actions)
       state$ret_track <- numeric(n_env)
       state$ply <- integer(n_env)
+      state$vs_pool <- NULL                         # fresh games: draw anew
     }
     fsp <- !is.null(pool)
     if (fsp) {
-      ps <- pool_start(state, n_env)
-      state <- ps$state
-      vs_pool <- ps$vs_pool
+      state <- pool_start(state, n_env)
       b_keep <- matrix(TRUE, n_env, n_steps)
       pool_games <- 0
       pool_wins <- pool_losses <- 0
@@ -363,7 +419,7 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         logits <- out$logits
         if (fsp) {
           # the snapshot moves where it is its side's turn (X at even plies)
-          opp <- vs_pool & (state$ply %% 2L) != ps$side
+          opp <- state$vs_pool & (state$ply %% 2L) != state$side
           if (any(opp)) {
             logits[, opp] <- policy_forward(state$opp_net, x, norm)$logits[, opp, drop = FALSE]
           }
@@ -405,15 +461,17 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       n_done <- n_done + sum(done)
       if (fsp) {
         # reward is for the side that just moved
-        ended <- vs_pool & r$terminated
+        ended <- state$vs_pool & r$terminated
         pool_games <- pool_games + sum(ended)
-        pool_wins <- pool_wins + sum(ended & ifelse(opp, r$reward < 0, r$reward > 0))
-        pool_losses <- pool_losses + sum(ended & ifelse(opp, r$reward > 0, r$reward < 0))
         won <- ended & ifelse(opp, r$reward < 0, r$reward > 0)
-        as_x <- ps$side == 0L
+        pool_wins <- pool_wins + sum(won)
+        pool_losses <- pool_losses + sum(ended & ifelse(opp, r$reward > 0, r$reward < 0))
+        as_x <- state$side == 0L
         side_games <- side_games + c(sum(ended & as_x), sum(ended & !as_x))
         side_wins <- side_wins + c(sum(won & as_x), sum(won & !as_x))
         state$ply <- ifelse(done, 0L, state$ply + 1L)
+        # a new game starts in the finished slots: new mode and side
+        state <- pool_assign(state, which(done))
       }
       obs <- r$obs
       if (!box) legal <- legal_of(env, r$legal, meta$n_actions)
@@ -596,8 +654,10 @@ ppo_pool_args <- function(pool) {
 ppo_build <- function(meta) {
   if (identical(meta$action_type, "box")) {
     ppo_box_net(meta$obs_dim, meta$act_dim, meta$hidden)
-  } else {
+  } else if (identical(meta$net_arch, "separate")) {
     ppo_net(meta$obs_dim, meta$n_actions, meta$hidden)
+  } else {
+    ppo_net_shared(meta$obs_dim, meta$n_actions, meta$hidden)
   }
 }
 

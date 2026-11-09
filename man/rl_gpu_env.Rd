@@ -8,11 +8,14 @@ rl_gpu_env(
   name,
   n,
   opponent = c("self", "random"),
-  device = c("cpu", "auto", "gpu")
+  device = c("cpu", "auto", "gpu"),
+  size = 3L,
+  scramble = 20L,
+  max_steps = 50L
 )
 }
 \arguments{
-\item{name}{Environment name.}
+\item{name}{Environment name: `"tictactoe"`, `"cube"` or `"cartpole"`.}
 
 \item{n}{Number of parallel games.}
 
@@ -30,6 +33,9 @@ step on the GPU pays an upload, a launch and five downloads. Measured (PPO,
 CPU against 8.7 ms on the GPU, which made GPU collection slower than CPU
 collection (18.7 against 15.2 ms). The GPU pays off once the rollout stays
 on the device.}
+
+\item{size, scramble, max_steps}{Cube only: edge length, scramble depth of
+reset games and the step limit.}
 }
 \value{
 An object of class `rl_gpu_env`.
@@ -39,10 +45,22 @@ Runs `n` copies of an environment as a ggml compute graph on the GPU
 (Vulkan) or CPU. The state stays on the device between steps.
 }
 \details{
-Currently available: `"tictactoe"`. Observations are canonical: the
+`"tictactoe"`: observations are canonical: the
 side to move sees its own marks as `+1` and the opponent's as `-1`.
 Actions are cell indices `0..8` (row-major). An illegal move ends the
 game with reward `-1`. Finished games are reset in the same step.
+
+`"cube"`: the `size` x `size` x `size` cube, one player. Observations are
+one-hot colours of the `6 size^2` stickers (sticker index fastest), actions
+the `6 size` quarter turns of one layer (`env$move_names`; move `a` and
+`bitwXor(a, 1)` are inverses). Reward is 1 when the cube is solved
+(`terminated`), else 0; `truncated` after `max_steps` moves. Reset and
+finished games start from `scramble` random moves without immediate undo.
+See [rl_cube_walks()] for labelled training data.
+
+`"cartpole"`: CartPole-v1, the physics of `rl_env("cartpole")` in f32 on the
+device; actions 0 (left) / 1 (right), reward 1 per step, `truncated` after
+500 steps, auto-reset with `final_obs`. Initial states use R's RNG.
 }
 \examples{
 \donttest{

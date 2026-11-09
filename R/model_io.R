@@ -13,7 +13,8 @@ rl_model_algos <- list(
     build = function(meta) ppo_build(meta),
     shapes = function(meta) {
       if (identical(meta$action_type, "box")) return(ppo_box_shapes(meta))
-      h <- meta$hidden
+      if (identical(meta$net_arch, "separate")) return(ppo_net_shapes(meta))
+      h <- meta$hidden                      # ppo_net_shared, files without net_arch
       list(l1_W = c(h, meta$obs_dim), l1_b = c(h, 1L),
            l2_W = c(h, h), l2_b = c(h, 1L),
            pi_W = c(meta$n_actions, h), pi_b = c(meta$n_actions, 1L),

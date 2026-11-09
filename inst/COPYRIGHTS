@@ -29,10 +29,12 @@ SOFTWARE.
 
 
 ======================================================================
-Gymnasium — acrobot environment
+Gymnasium — acrobot and CartPole environments
 Used in: src/env_control.cpp, acrobot (adapted by
 RLtools from
-https://github.com/Farama-Foundation/Gymnasium/blob/v0.28.1/gymnasium/envs/classic_control/acrobot.py)
+https://github.com/Farama-Foundation/Gymnasium/blob/v0.28.1/gymnasium/envs/classic_control/acrobot.py);
+src/env_control.cpp and R/gpu_cartpole.R, cartpole (CartPole-v1, from
+https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 License: MIT
 
 Copyright (c) 2016 OpenAI

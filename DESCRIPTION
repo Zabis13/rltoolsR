@@ -1,16 +1,16 @@
 Package: rltoolsR
 Type: Package
 Title: Reinforcement Learning Toolkit with 'ggmlR' Backend
-Version: 0.1.1
+Version: 0.1.2
 Authors@R: c(
     person("Yuri", "Baramykov", email = "lbsbmsu@mail.ru", role = c("aut", "cre"),
            comment = c(ORCID = "0009-0000-7627-4217")),
     person("Jonas", "Eschmann", role = c("ctb", "cph"),
-           comment = "Author of the 'RLtools' library; environments in src/env_control.cpp are ported from it"),
+           comment = "Author of the 'RLtools' library; pendulum, acrobot and car environments in src/env_control.cpp are ported from it"),
     person("OpenAI", role = "cph",
-           comment = "'Gym'/'Gymnasium' acrobot environment ported in src/env_control.cpp"),
+           comment = "'Gym'/'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R"),
     person("Farama Foundation", role = "cph",
-           comment = "'Gymnasium' acrobot environment ported in src/env_control.cpp"),
+           comment = "'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R"),
     person("Christoph", "Dann", role = c("ctb", "cph"),
            comment = "Author of the RLPy acrobot environment"),
     person("Alborz", "Geramifard", role = c("ctb", "cph"),
@@ -25,8 +25,10 @@ Description: Provides reinforcement learning tools with a unified
     environment interface and 'Gymnasium'-style action and observation
     spaces. Environments include continuous control tasks ported from the
     header-only 'RLtools' C++ library (Eschmann et al. (2024)
-    <doi:10.48550/arXiv.2306.03530>) and a batched tic-tac-toe
-    environment. Implements proximal policy optimization (Schulman et al.
+    <doi:10.48550/arXiv.2306.03530>), 'CartPole', and batched environments
+    computed as 'ggml' graphs on the GPU or CPU: tic-tac-toe, 'CartPole'
+    and the N x N x N Rubik's cube, with labelled random walks and a
+    move-value model for the cube. Implements proximal policy optimization (Schulman et al.
     (2017) <doi:10.48550/arXiv.1707.06347>) for discrete and continuous
     actions within a generic training loop that accepts user-defined
     algorithms. Neural networks are trained with 'ggmlR', with 'Vulkan'

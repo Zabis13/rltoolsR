@@ -23,7 +23,8 @@ test_that("an optimizer step updates every named parameter", {
   on.exit(ag_device(prev), add = TRUE)
   net <- rltoolsR:::ppo_net(9L, 9L, 8L)
   q <- net$parameters()
-  expect_named(q, c("l1_W", "l1_b", "l2_W", "l2_b", "pi_W", "pi_b", "v_W", "v_b"))
+  expect_named(q, c("a1_W", "a1_b", "a2_W", "a2_b", "pi_W", "pi_b",
+                    "c1_W", "c1_b", "c2_W", "c2_b", "v_W", "v_b"))
   w0 <- lapply(q, as.matrix)
   opt <- optimizer_adam(q, lr = 1e-2)
   x <- ag_tensor(matrix(runif(9 * 4), 9, 4))
@@ -96,4 +97,27 @@ test_that("bad files fail with clear errors", {
   expect_error(rl_load_model(f, device = "cpu"), "has shape")
 
   expect_error(rl_save_model(list(net = m$net), f), "algorithm metadata")
+})
+
+test_that("a model saved with the shared discrete network (no net_arch) still loads", {
+  # files written before meta$net_arch: shared relu trunk, tanh value head
+  m <- train_tiny()
+  expect_identical(m$meta$net_arch, "separate")
+  old <- m
+  old$meta$net_arch <- NULL
+  set.seed(2)
+  prev <- ag_device("cpu")
+  old$net <- rltoolsR:::ppo_net_shared(9L, 9L, 16L)
+  ag_device(prev)
+  f <- tempfile(fileext = ".rds")
+  on.exit(unlink(f), add = TRUE)
+  rl_save_model(old, f)
+
+  m2 <- rl_load_model(f, device = "cpu")
+  expect_null(m2$meta$net_arch)
+  expect_named(m2$net$parameters(),
+               c("l1_W", "l1_b", "l2_W", "l2_b", "pi_W", "pi_b", "v_W", "v_b"))
+  obs <- matrix(sample(c(-1, 0, 1), 9 * 32, TRUE), 32)
+  expect_equal(model_logits(m2, obs), model_logits(old, obs))
+  expect_identical(rl_act(m2, obs), rl_act(old, obs))
 })

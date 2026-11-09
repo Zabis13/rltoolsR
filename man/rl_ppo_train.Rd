@@ -132,10 +132,11 @@ tic-tac-toe and Pendulum, several seeds). Measured on the GPU: update 3.6x
 any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
 against a pool of past policies, for two-player self-play environments
 only. Every `every` iterations the weights are copied into the pool
-(oldest dropped beyond `size`). At the start of each rollout every game
-independently plays self-play with probability `p_self`, otherwise
-against one snapshot drawn uniformly from the pool for that rollout, with
-the learner's side (X or O) drawn independently per game. GAE runs over
+(oldest dropped beyond `size`). Every game, when it starts, independently
+plays self-play with probability `p_self`, otherwise against the pool,
+with the learner's side (X or O) drawn independently; a game keeps both
+until it ends. The pool opponent is one snapshot drawn uniformly per
+rollout. GAE runs over
 the full trajectories (the learner's value net also scores the opponent's
 positions, the value being from the side to move); the snapshot's moves
 are then dropped and the rest randomly trimmed to a multiple of
