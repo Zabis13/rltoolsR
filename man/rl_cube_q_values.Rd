@@ -19,3 +19,13 @@ Matrix `nrow(obs)` x moves: predicted distance to solved after
 \description{
 Move values of a cube Q-model
 }
+\examples{
+\donttest{
+env <- rl_gpu_env("cube", n = 64, size = 3, device = "cpu")
+algo <- rl_cube_q(n_moves = 6, hidden = c(64, 32), blocks = 0, updates = 5)
+m <- rl_train(env, algo, total_steps = 64 * 5, device = "cpu", verbose = FALSE)
+obs <- rl_reset(env)
+q <- rl_cube_q_values(m, obs)
+env$move_names[max.col(-q, "first")]   # the move the model rates best
+}
+}

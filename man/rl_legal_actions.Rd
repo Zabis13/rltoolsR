@@ -11,8 +11,9 @@ rl_legal_actions(env)
 }
 \value{
 Logical mask over discrete actions (`n x n_actions` matrix for
-  `rl_vec_env` and `rl_gpu_env`), or `NULL` when the action space has no notion of legal
-  actions (e.g. continuous `Box`).
+  `rl_vec_env` and `rl_gpu_env`), or `NULL` when the environment has no
+  notion of legal actions (continuous `Box` actions, CartPole). The cube
+  allows every move: an all-`TRUE` matrix.
 }
 \description{
 Legal actions in the current state

@@ -6,7 +6,7 @@
 \alias{rltoolsR-package}
 \title{rltoolsR: Reinforcement Learning Toolkit with 'ggmlR' Backend}
 \description{
-Provides reinforcement learning tools with a unified environment interface and 'Gymnasium'-style action and observation spaces. Environments include continuous control tasks ported from the header-only 'RLtools' C++ library (Eschmann et al. (2024) \doi{10.48550/arXiv.2306.03530}) and a batched tic-tac-toe environment. Implements proximal policy optimization (Schulman et al. (2017) \doi{10.48550/arXiv.1707.06347}) for discrete and continuous actions within a generic training loop that accepts user-defined algorithms. Neural networks are trained with 'ggmlR', with 'Vulkan' GPU acceleration and a transparent CPU fallback.
+Provides reinforcement learning tools with a unified environment interface and 'Gymnasium'-style action and observation spaces. Environments include continuous control tasks ported from the header-only 'RLtools' C++ library (Eschmann et al. (2024) \doi{10.48550/arXiv.2306.03530}), 'CartPole', and batched environments computed as 'ggml' graphs on the GPU or CPU: tic-tac-toe, 'CartPole' and the N x N x N Rubik's cube, with labelled random walks and a move-value model for the cube. Implements proximal policy optimization (Schulman et al. (2017) \doi{10.48550/arXiv.1707.06347}) for discrete and continuous actions within a generic training loop that accepts user-defined algorithms. Neural networks are trained with 'ggmlR', with 'Vulkan' GPU acceleration and a transparent CPU fallback.
 }
 \seealso{
 Useful links:
@@ -21,9 +21,9 @@ Useful links:
 
 Other contributors:
 \itemize{
-  \item Jonas Eschmann (Author of the 'RLtools' library; environments in src/env_control.cpp are ported from it) [contributor, copyright holder]
-  \item OpenAI ('Gym'/'Gymnasium' acrobot environment ported in src/env_control.cpp) [copyright holder]
-  \item Farama Foundation ('Gymnasium' acrobot environment ported in src/env_control.cpp) [copyright holder]
+  \item Jonas Eschmann (Author of the 'RLtools' library; pendulum, acrobot and car environments in src/env_control.cpp are ported from it) [contributor, copyright holder]
+  \item OpenAI ('Gym'/'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R) [copyright holder]
+  \item Farama Foundation ('Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R) [copyright holder]
   \item Christoph Dann (Author of the RLPy acrobot environment) [contributor, copyright holder]
   \item Alborz Geramifard (RLPy acrobot environment) [contributor, copyright holder]
   \item Robert H. Klein (RLPy acrobot environment) [contributor, copyright holder]

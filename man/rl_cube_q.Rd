@@ -33,6 +33,8 @@ is the length of the cosine, normally `total_steps / env$n`.}
 \value{
 An [rl_algo()]. The model from [rl_train()] has class
   `rl_cube_q`; see [rl_cube_q_values()] and [rl_cube_q_eval()].
+  [rl_save_model()], [rl_load_model()] and the checkpoints of [rl_train()]
+  (`checkpoint`, `resume`) do not support it yet.
 }
 \description{
 An [rl_algo()] for [rl_train()] on an environment from

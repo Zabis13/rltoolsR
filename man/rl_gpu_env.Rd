@@ -19,7 +19,8 @@ rl_gpu_env(
 
 \item{n}{Number of parallel games.}
 
-\item{opponent}{`"self"`: both sides are played by the caller, the side
+\item{opponent}{Tic-tac-toe only (ignored otherwise).
+`"self"`: both sides are played by the caller, the side
 to move alternates and `reward` is for the side that just moved.
 `"random"`: the caller always plays X and a uniformly random legal
 opponent answers inside the same graph; `reward` is for X. Its moves
@@ -38,7 +39,8 @@ on the device.}
 reset games and the step limit.}
 }
 \value{
-An object of class `rl_gpu_env`.
+An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole`
+  first for those environments).
 }
 \description{
 Runs `n` copies of an environment as a ggml compute graph on the GPU
@@ -67,5 +69,13 @@ device; actions 0 (left) / 1 (right), reward 1 per step, `truncated` after
 env <- rl_gpu_env("tictactoe", n = 4, device = "cpu")
 obs <- rl_reset(env)
 res <- rl_step(env, c(0, 4, 8, 2))
+
+cube <- rl_gpu_env("cube", n = 4, size = 3, scramble = 5, device = "cpu")
+cube$move_names
+res <- rl_step(cube, c(0, 2, 4, 6))
+
+cp <- rl_gpu_env("cartpole", n = 4, device = "cpu")
+obs <- rl_reset(cp)
+res <- rl_step(cp, c(0, 1, 0, 1))
 }
 }

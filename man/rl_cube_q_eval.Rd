@@ -23,3 +23,13 @@ question a descent asks); `top1`: share where `prev` has the lowest value
 of all moves; `mae_prev`, `mae_next`: mean absolute error of the two
 labelled values.
 }
+\examples{
+\donttest{
+env <- rl_gpu_env("cube", n = 64, size = 3, device = "cpu")
+val <- rl_cube_walks(env, n_moves = 6)             # fixed held-out set
+algo <- rl_cube_q(n_moves = 6, hidden = c(64, 32), blocks = 0, updates = 5)
+m <- rl_train(env, algo, total_steps = 64 * 5, device = "cpu", verbose = FALSE,
+              eval_every_steps = 64 * 5, eval_fn = function(m) rl_cube_q_eval(m, val))
+rl_cube_q_eval(m, val, by_depth = TRUE)
+}
+}
