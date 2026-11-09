@@ -41,7 +41,9 @@ test_that("numbers are written in full precision with a dot in any locale", {
   f <- file.path(dir, "run.csv")
   old <- options(OutDec = ",")
   m <- tryCatch(log_run(f), finally = options(old))
-  expect_identical(utils::read.csv(f)$pg, m$history$pg)
+  # compare the text: parsing "%.17g" back may be 1 ULP off (Windows read.csv)
+  pg <- utils::read.csv(f, colClasses = "character")$pg
+  expect_identical(pg, sprintf("%.17g", m$history$pg))
 })
 
 test_that("existing logs stop rl_train before the first iteration", {

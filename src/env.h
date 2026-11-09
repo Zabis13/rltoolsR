@@ -62,6 +62,9 @@ public:
         return r;
     }
 
+    // legal_mask() and do_save_state() must be pure: no RNG, no clock, the same
+    // result on every call. env_api.cpp calls them twice (size, then copy).
+
     // Empty for environments without discrete legal actions.
     virtual std::vector<uint8_t> legal_mask() const { return {}; }
 
@@ -93,7 +96,10 @@ protected:
 
 // Returns nullptr for an unknown name.
 Env* make_env(const std::string& name, int64_t seed);
-std::vector<std::string> env_names();
+// Registered names as plain literals: no C++ objects, nothing to destroy when
+// R longjmps while copying them out.
+extern const char* const ENV_NAMES[];
+extern const int N_ENV_NAMES;
 
 // Number of scalars in a flat sample of the space.
 inline int space_size(const Space& s) {

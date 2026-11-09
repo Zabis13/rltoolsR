@@ -1,6 +1,8 @@
 // .Call interface to the environment contract.
 #include <cstdio>
 #include <exception>
+#include <stdexcept>
+#include <string>
 
 #include "env.h"
 
@@ -27,15 +29,17 @@ Env* make_env(const std::string& name, int64_t seed) {
     return nullptr;
 }
 
-std::vector<std::string> env_names() {
-    return {"pendulum", "cartpole", "acrobot", "acrobot_swingup", "car", "car_track"};
-}
+const char* const ENV_NAMES[] = {"pendulum", "cartpole", "acrobot", "acrobot_swingup", "car", "car_track"};
+const int N_ENV_NAMES = sizeof(ENV_NAMES) / sizeof(ENV_NAMES[0]);
 
 }  // namespace rltr
 
 using rltr::Env;
 
 // C++ exceptions must not cross R's longjmp: catch, copy the message, raise after unwinding.
+// Rf_error() longjmps and skips C++ destructors, so every object with a
+// non-trivial destructor (std::vector, std::string, ...) must live inside the
+// RLTR_TRY block; outside it keep only plain values and PROTECTed SEXPs.
 #define RLTR_TRY char rltr_err_[512] = ""; try {
 #define RLTR_CATCH                                                                   \
     } catch (const std::exception& e) {                                              \
@@ -90,10 +94,17 @@ static SEXP real_vec(const std::vector<double>& v) {
     return out;
 }
 
-static SEXP obs_vec(const std::vector<float>& v) {
-    SEXP out = Rf_allocVector(REALSXP, v.size());
+// Fills a REALSXP allocated before RLTR_TRY; call inside the try block.
+static void copy_obs(const std::vector<float>& v, SEXP out) {
+    if (static_cast<R_xlen_t>(v.size()) != XLENGTH(out)) {
+        throw std::runtime_error("observation has length " + std::to_string(v.size()) +
+                                 ", expected " + std::to_string(XLENGTH(out)));
+    }
     for (size_t i = 0; i < v.size(); i++) REAL(out)[i] = v[i];
-    return out;
+}
+
+static int obs_dim(const Env* env) {
+    return rltr::space_size(env->spec().observation_space);
 }
 
 static const char* space_type_name(rltr::SpaceType t) {
@@ -166,20 +177,19 @@ static SEXP space_to_r(const rltr::Space& s) {
 }
 
 extern "C" SEXP rlt_env_names(void) {
-    std::vector<std::string> names = rltr::env_names();
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, names.size()));
-    for (size_t i = 0; i < names.size(); i++) SET_STRING_ELT(out, i, Rf_mkChar(names[i].c_str()));
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, rltr::N_ENV_NAMES));
+    for (int i = 0; i < rltr::N_ENV_NAMES; i++) SET_STRING_ELT(out, i, Rf_mkChar(rltr::ENV_NAMES[i]));
     UNPROTECT(1);
     return out;
 }
 
 extern "C" SEXP rlt_env_make(SEXP name, SEXP seed) {
-    std::string nm = CHAR(STRING_ELT(name, 0));
+    const char* nm = CHAR(STRING_ELT(name, 0));
     int64_t s = as_seed(seed);
     Env* env = nullptr;
     RLTR_TRY
         env = rltr::make_env(nm, s);
-        if (env == nullptr) throw std::invalid_argument("unknown environment: " + nm);
+        if (env == nullptr) throw std::invalid_argument(std::string("unknown environment: ") + nm);
     RLTR_CATCH
     SEXP ptr = PROTECT(R_MakeExternalPtr(env, Rf_install("rltr_env"), R_NilValue));
     R_RegisterCFinalizerEx(ptr, env_finalizer, TRUE);
@@ -207,50 +217,94 @@ static SEXP spec_to_r(const rltr::EnvSpec& sp) {
 extern "C" SEXP rlt_env_reset(SEXP ptr, SEXP seed) {
     Env* env = get_env(ptr);
     int64_t s = as_seed(seed);
-    std::vector<float> obs;
+    SEXP obs = PROTECT(Rf_allocVector(REALSXP, obs_dim(env)));
     RLTR_TRY
-        obs = env->reset(s);
+        copy_obs(env->reset(s), obs);
     RLTR_CATCH
-    return obs_vec(obs);
+    UNPROTECT(1);
+    return obs;
 }
 
 extern "C" SEXP rlt_env_step(SEXP ptr, SEXP action) {
     Env* env = get_env(ptr);
     SEXP a = PROTECT(Rf_coerceVector(action, REALSXP));
-    std::vector<double> actions(REAL(a), REAL(a) + XLENGTH(a));
-    UNPROTECT(1);
-    rltr::StepResult r;
+    SEXP obs = PROTECT(Rf_allocVector(REALSXP, obs_dim(env)));
+    double reward = 0;
+    bool terminated = false, truncated = false;
     RLTR_TRY
-        r = env->step(actions);
+        std::vector<double> actions(REAL(a), REAL(a) + XLENGTH(a));
+        rltr::StepResult r = env->step(actions);
+        copy_obs(r.obs, obs);
+        reward = r.reward;
+        terminated = r.terminated;
+        truncated = r.truncated;
     RLTR_CATCH
     const char* nms[] = {"obs", "reward", "terminated", "truncated"};
     SEXP out = PROTECT(named_list(nms, 4));
-    SET_VECTOR_ELT(out, 0, obs_vec(r.obs));
-    SET_VECTOR_ELT(out, 1, Rf_ScalarReal(r.reward));
-    SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(r.terminated));
-    SET_VECTOR_ELT(out, 3, Rf_ScalarLogical(r.truncated));
-    UNPROTECT(1);
+    SET_VECTOR_ELT(out, 0, obs);
+    SET_VECTOR_ELT(out, 1, Rf_ScalarReal(reward));
+    SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(terminated));
+    SET_VECTOR_ELT(out, 3, Rf_ScalarLogical(truncated));
+    UNPROTECT(3);
     return out;
+}
+
+// Two-phase results of unknown size (legal_mask(), save_state()): the C++
+// vector must be gone before R allocates (an allocation error longjmps too).
+// Phase 1 calls the method only to get the size; then the SEXP is allocated;
+// phase 2 calls it again and copies straight into the SEXP. This relies on
+// legal_mask() and save_state() being pure: const, no RNG, no clock, the same
+// result on every call. A size change between the calls is reported as an error.
+static void size_mismatch(const char* what, size_t first, size_t second) {
+    Rf_error("%s returned %lu elements, then %lu: it must give the same result on every call",
+             what, static_cast<unsigned long>(first), static_cast<unsigned long>(second));
+}
+
+// Copies a 0/1 mask into a LGLSXP of the same length; call inside RLTR_TRY.
+static size_t copy_mask(const std::vector<uint8_t>& mask, SEXP out) {
+    if (static_cast<R_xlen_t>(mask.size()) == XLENGTH(out)) {
+        for (size_t i = 0; i < mask.size(); i++) LOGICAL(out)[i] = mask[i] != 0;
+    }
+    return mask.size();
 }
 
 extern "C" SEXP rlt_env_legal_mask(SEXP ptr) {
     Env* env = get_env(ptr);
-    std::vector<uint8_t> mask = env->legal_mask();
-    if (mask.empty()) return R_NilValue;
-    SEXP out = PROTECT(Rf_allocVector(LGLSXP, mask.size()));
-    for (size_t i = 0; i < mask.size(); i++) LOGICAL(out)[i] = mask[i] != 0;
+    size_t n = 0, got = 0;
+    {
+        RLTR_TRY
+            n = env->legal_mask().size();
+        RLTR_CATCH
+    }
+    if (n == 0) return R_NilValue;  // no mask: every action is legal
+    SEXP out = PROTECT(Rf_allocVector(LGLSXP, n));
+    {
+        RLTR_TRY
+            got = copy_mask(env->legal_mask(), out);
+        RLTR_CATCH
+    }
+    if (got != n) size_mismatch("legal_mask()", n, got);
     UNPROTECT(1);
     return out;
 }
 
 extern "C" SEXP rlt_env_save_state(SEXP ptr) {
     Env* env = get_env(ptr);
-    std::vector<uint8_t> st;
-    RLTR_TRY
-        st = env->save_state();
-    RLTR_CATCH
-    SEXP out = PROTECT(Rf_allocVector(RAWSXP, st.size()));
-    if (!st.empty()) std::memcpy(RAW(out), st.data(), st.size());
+    size_t n = 0, got = 0;
+    {
+        RLTR_TRY
+            n = env->save_state().size();
+        RLTR_CATCH
+    }
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, n));
+    {
+        RLTR_TRY
+            std::vector<uint8_t> st = env->save_state();
+            got = st.size();
+            if (got == n && n > 0) std::memcpy(RAW(out), st.data(), n);
+        RLTR_CATCH
+    }
+    if (got != n) size_mismatch("save_state()", n, got);
     UNPROTECT(1);
     return out;
 }
@@ -258,9 +312,8 @@ extern "C" SEXP rlt_env_save_state(SEXP ptr) {
 extern "C" SEXP rlt_env_load_state(SEXP ptr, SEXP state) {
     Env* env = get_env(ptr);
     if (TYPEOF(state) != RAWSXP) Rf_error("state must be a raw vector");
-    std::vector<uint8_t> st(RAW(state), RAW(state) + XLENGTH(state));
     RLTR_TRY
-        env->load_state(st);
+        env->load_state(std::vector<uint8_t>(RAW(state), RAW(state) + XLENGTH(state)));
     RLTR_CATCH
     return R_NilValue;
 }
@@ -285,7 +338,7 @@ static VecEnv* get_vec(SEXP ptr) {
 }
 
 extern "C" SEXP rlt_vec_make(SEXP name, SEXP n, SEXP seed) {
-    std::string nm = CHAR(STRING_ELT(name, 0));
+    const char* nm = CHAR(STRING_ELT(name, 0));
     int num = Rf_asInteger(n);
     int64_t s = as_seed(seed);
     VecEnv* v = nullptr;
@@ -341,10 +394,20 @@ extern "C" SEXP rlt_vec_step(SEXP ptr, SEXP action) {
 
 extern "C" SEXP rlt_vec_legal_mask(SEXP ptr) {
     VecEnv* v = get_vec(ptr);
-    std::vector<uint8_t> mask = v->legal_mask();
-    if (mask.empty()) return R_NilValue;
-    SEXP out = PROTECT(Rf_allocMatrix(LGLSXP, v->n(), static_cast<int>(mask.size()) / v->n()));
-    for (size_t i = 0; i < mask.size(); i++) LOGICAL(out)[i] = mask[i] != 0;
+    size_t n = 0, got = 0;
+    {
+        RLTR_TRY
+            n = v->legal_mask().size();
+        RLTR_CATCH
+    }
+    if (n == 0) return R_NilValue;  // no mask: every action is legal
+    SEXP out = PROTECT(Rf_allocMatrix(LGLSXP, v->n(), static_cast<int>(n) / v->n()));
+    {
+        RLTR_TRY
+            got = copy_mask(v->legal_mask(), out);
+        RLTR_CATCH
+    }
+    if (got != n) size_mismatch("legal_mask()", n, got);
     UNPROTECT(1);
     return out;
 }

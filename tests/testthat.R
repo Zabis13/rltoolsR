@@ -17,6 +17,7 @@ valgrind_core <- c(
   "vec-env",
   "env-pendulum",
   "env-rltools",   # all C++ environments in src/
+  "env-errors",    # C++ errors must not leak past Rf_error()
   "replay-buffer"
 )
 
