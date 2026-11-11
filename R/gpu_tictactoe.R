@@ -82,6 +82,14 @@ ttt_full <- function(ctx, board) {
 #'   CPU against 8.7 ms on the GPU, which made GPU collection slower than CPU
 #'   collection (18.7 against 15.2 ms). The GPU pays off once the rollout stays
 #'   on the device.
+#'
+#'   Observations are returned where the environment keeps them. With
+#'   `device = "gpu"`, tic-tac-toe and cube return `obs` from [rl_reset()] and
+#'   [rl_step()] as an [rl_device_obs] (call `as.matrix()` for the host
+#'   matrix), and the cube's `final_obs` holds only the truncated games' rows
+#'   (the others are `NA`); cartpole computes `terminated` and its resets in R from the
+#'   state, so it returns a matrix on every device. With `device = "cpu"`
+#'   every environment returns a matrix.
 #' @param size,scramble,max_steps Cube only: edge length, scramble depth of
 #'   reset games and the step limit.
 #' @return An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole`
@@ -212,6 +220,8 @@ rl_reset.rl_gpu_env <- function(env, seed = NULL) {
   st <- env$st
   ggml_backend_tensor_set_data(st$board[[st$cur]], numeric(9 * st$n))
   ggml_backend_tensor_set_data(st$player[[st$cur]], rep(1, st$n))
+  # empty boards with X to move: the observation is the board itself
+  if (env$device == "gpu") return(new_rl_device_obs(st$board[[st$cur]], st$backend, st$n, 9L))
   matrix(0, st$n, 9)
 }
 
@@ -230,7 +240,9 @@ rl_step.rl_gpu_env <- function(env, action) {
   st$cur <- 3L - st$cur
   out <- step$out
   list(
-    obs = t(matrix(ggml_backend_tensor_get_data(out$obs), 9, st$n)),
+    # [9, n] output of this step's graph: kept until the graph runs again
+    obs = if (env$device == "gpu") new_rl_device_obs(out$obs, st$backend, st$n, 9L) else
+      t(matrix(ggml_backend_tensor_get_data(out$obs), 9, st$n)),
     reward = ggml_backend_tensor_get_data(out$reward),
     terminated = ggml_backend_tensor_get_data(out$done) > 0.5,
     truncated = logical(st$n),

@@ -28,7 +28,8 @@ run_ttt <- function(dev, capture, mgn = NULL, seed = 11L) {
     set.seed(seed)
     env <- rl_gpu_env("tictactoe", n = 64, device = dev)     # N = 9 * 64 = 576
     m <- rl_ppo_train(env, iterations = 1, minibatch = 200, device = dev,
-                      verbose = FALSE, max_grad_norm = mgn, capture = capture)
+                      verbose = FALSE, max_grad_norm = mgn, capture = capture,
+                      rollout = "host")   # same games with and without capture
     list(h = m$history, w = lapply(m$net$parameters(), as.matrix))
   })
 }
@@ -99,11 +100,13 @@ test_that("a changed graph constant records anew instead of reusing", {
     for (a in algos) state <- a$update(a$collect(state, env)$state)$state
     list(w = lapply(state$net$parameters(), as.matrix), captures = state$captures)
   }
-  cap <- one_update(list(rl_ppo(clip = 0.2, minibatch = 576, capture = TRUE),
-                         rl_ppo(clip = 0.1, minibatch = 576, capture = TRUE)))
+  # rollout = "host": the same collection as capture = FALSE
+  cap <- one_update(list(rl_ppo(clip = 0.2, minibatch = 576, capture = TRUE, rollout = "host"),
+                         rl_ppo(clip = 0.1, minibatch = 576, capture = TRUE, rollout = "host")))
   ref <- one_update(list(rl_ppo(clip = 0.2, minibatch = 576, capture = FALSE),
                          rl_ppo(clip = 0.1, minibatch = 576, capture = FALSE)))
-  expect_length(ls(cap$captures), 2L)                 # one recording per clip value
+  # one update recording per clip value (obs_*: the device observation path)
+  expect_length(grep("^obs_", ls(cap$captures), value = TRUE, invert = TRUE), 2L)
   for (nm in names(ref$w))
     expect_equal(cap$w[[nm]], ref$w[[nm]], tolerance = 1e-4, info = nm)
 })

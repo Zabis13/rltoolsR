@@ -27,13 +27,21 @@ opponent answers inside the same graph; `reward` is for X. Its moves
 use R's RNG, so `set.seed()` makes them reproducible.}
 
 \item{device}{`"cpu"` (the default), `"auto"` (GPU if a Vulkan device is
-available, else CPU) or `"gpu"`. CPU is the default even when the policy
-trains on the GPU: observations go through R to the network anyway, and a
-step on the GPU pays an upload, a launch and five downloads. Measured (PPO,
-256 games, 9 steps per iteration, RX 9070): env 2.0 ms per iteration on the
-CPU against 8.7 ms on the GPU, which made GPU collection slower than CPU
-collection (18.7 against 15.2 ms). The GPU pays off once the rollout stays
-on the device.}
+  available, else CPU) or `"gpu"`. CPU is the default even when the policy
+  trains on the GPU: observations go through R to the network anyway, and a
+  step on the GPU pays an upload, a launch and five downloads. Measured (PPO,
+  256 games, 9 steps per iteration, RX 9070): env 2.0 ms per iteration on the
+  CPU against 8.7 ms on the GPU, which made GPU collection slower than CPU
+  collection (18.7 against 15.2 ms). The GPU pays off once the rollout stays
+  on the device.
+
+  Observations are returned where the environment keeps them. With
+  `device = "gpu"`, tic-tac-toe and cube return `obs` from [rl_reset()] and
+  [rl_step()] as an [rl_device_obs] (call `as.matrix()` for the host
+  matrix), and the cube's `final_obs` holds only the truncated games' rows
+  (the others are `NA`); cartpole computes `terminated` and its resets in R from the
+  state, so it returns a matrix on every device. With `device = "cpu"`
+  every environment returns a matrix.}
 
 \item{size, scramble, max_steps}{Cube only: edge length, scramble depth of
 reset games and the step limit.}

@@ -152,3 +152,47 @@ test_that("a continuous PPO update moves the policy along the advantage", {
   expect_lt(mean(d[adv < 0]), 0)
   expect_lt(mean(abs(value_of() - ret)), v0)
 })
+
+test_that("policy_act_box: one graph draws the action and returns its logp and value", {
+  vk <- ggmlR::ggml_vulkan_available() && ggmlR::ggml_vulkan_device_count() >= 1L
+  B <- 256L; d <- 2L
+  set.seed(41)
+  x <- matrix(rnorm(3 * B), 3)
+  acts <- list()
+  for (dev in c("cpu", if (vk) "gpu")) {
+    set.seed(42)
+    prev <- ag_device(dev)
+    prec <- ag_matmul_precision("f32")
+    net <- rltoolsR:::ppo_box_net(3L, d, 16L)
+    sd <- ag_state_dict(net)
+    sd$parameters$log_std[] <- c(-0.7, 0.4)          # two different, non-unit stds
+    ag_load_state_dict(net, sd)
+    out <- lapply(net$forward(ag_tensor(x)), as.matrix)
+    mu <- out$mu; log_std <- as.numeric(out$log_std)
+
+    s1 <- rltoolsR:::policy_act_box(net, x, NULL, d, key = c(0.3, 0.7))
+    s2 <- rltoolsR:::policy_act_box(net, x, NULL, d, key = c(0.3, 0.7))
+    s3 <- rltoolsR:::policy_act_box(net, x, NULL, d, key = c(0.6, 0.1))
+    # another batch size re-records with the new noise shape
+    s4 <- rltoolsR:::policy_act_box(net, x[, 1:8], NULL, d, key = c(0.3, 0.7))
+    ag_matmul_precision(prec); ag_device(prev)
+
+    expect_identical(dim(s1$a), c(d, B))
+    expect_identical(s2$a, s1$a)                       # same key, same actions
+    expect_false(isTRUE(all.equal(s3$a, s1$a)))        # new key, new actions
+    expect_identical(dim(s4$a), c(d, 8L))
+    tol <- if (dev == "cpu") 1e-10 else 1e-4
+    for (s in list(s1, s3)) {
+      # the density from eps in the graph against the host formula from a
+      expect_lt(max(abs(s$logp - rltoolsR:::gauss_logp(s$a, mu, log_std))), tol)
+      expect_lt(max(abs(s$value - as.numeric(out$value))), tol)
+    }
+    # the noise is standard normal, scaled per action dimension
+    eps <- (s1$a - mu) * exp(-log_std)
+    expect_lt(abs(mean(eps)), 0.15)
+    expect_equal(var(as.numeric(eps)), 1, tolerance = 0.2)
+    acts[[dev]] <- s1$a
+  }
+  # same seed, same key: the CPU and the GPU draw the same actions
+  if (vk) expect_lt(max(abs(acts$cpu - acts$gpu)), 1e-3)
+})

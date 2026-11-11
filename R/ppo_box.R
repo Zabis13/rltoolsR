@@ -49,6 +49,57 @@ clip_to_space <- function(a, space) {
   t(pmin(pmax(a, space$low), space$high))
 }
 
+# Box policies at collection: forward, noise, action, its log-density and the
+# value as one recorded graph. The host sends the observations and a two-number
+# key and gets back `a` [act_dim, B] (unclipped), `logp` and `value` per
+# observation; mu and log_std stay on the device.
+#
+# The noise eps ~ N(0, 1) is drawn on the device from `key` (ggmlR::ag_rand),
+# a = mu + eps * exp(log_std), and the density is taken from eps itself:
+# logp = -1/2 sum(eps^2) - sum(log_std) - d/2 log(2 pi). The update recomputes
+# it from the stored action as (a - mu) / exp(log_std) (box_logp_tensor()),
+# which equals eps up to f32 rounding of a.
+policy_act_box <- function(net, x, norm = NULL, act_dim, key = stats::runif(2L)) {
+  key <- matrix(as.numeric(key)[1:2], 2L, 1L)
+  B <- ncol(x)
+  body <- function(h, key, B) {
+    out <- net$forward(h)
+    eps <- ag_rand(key, "normal", c(act_dim, B))
+    a <- ag_add(out$mu, ag_mul(eps, ag_exp(out$log_std)))
+    logp <- ag_sub(ag_scale(ag_sum(ag_mul(eps, eps), dim = 2L), -0.5), ag_sum(out$log_std))
+    list(a = a, logp = logp, value = out$value)
+  }
+  cache <- net$captured
+  if (is.null(cache)) {                # a net built without the cache
+    res <- lapply(body(obs_input(x, norm), key, B), as.matrix)
+  } else {
+    params <- unname(net$parameters())
+    # the batch size is a constant of the recording (the shape of eps); a
+    # recording is redone exactly when the input shapes change, and reads it
+    # from here
+    cache$act_box_B <- B
+    if (is.null(norm)) {
+      if (is.null(cache$act_box))
+        cache$act_box <- ag_capture(function(x, key) body(x, key, cache$act_box_B),
+                                    params = params)
+      res <- cache$act_box(x = x, key = key)
+    } else {
+      # clip is a constant of the graph, so one recording per value
+      id <- paste0("act_box_norm_", format(norm$clip_obs, digits = 17))
+      if (is.null(cache[[id]])) {
+        clip <- norm$clip_obs
+        cache[[id]] <- ag_capture(
+          function(x, m, s, key) body(obs_normalize(x, m, s, clip), key, cache$act_box_B),
+          params = params)
+      }
+      res <- cache[[id]](x = x, m = matrix(norm$mean), s = obs_scale(norm), key = key)
+    }
+  }
+  a <- res$a
+  list(a = a, logp = as.numeric(res$logp) - 0.5 * nrow(a) * log(2 * pi),
+       value = as.numeric(res$value))
+}
+
 # Gaussian log-density in the graph, without the constant -d/2 log(2 pi):
 # [1, B] tensor for actions `Aa` (act_dim x B tensor) under the forward output.
 box_logp_tensor <- function(out, Aa) {

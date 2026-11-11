@@ -210,7 +210,9 @@ cube_gpu_env <- function(n, size, scramble, max_steps, device) {
 
   st$ctx_state <- ggml_init(4 * 1024 * 1024, no_alloc = TRUE)
   cs <- st$ctx_state
-  st$state  <- lapply(1:2, function(i) ggml_new_tensor_3d(cs, GGML_TYPE_F32, S, 6, n))
+  # 2-d [S*6, n] (one column per game, as ag_buffer_copy_from() takes it);
+  # the step graph views it as [S, 6, n]
+  st$state  <- lapply(1:2, function(i) ggml_new_tensor_2d(cs, GGML_TYPE_F32, S * 6L, n))
   st$P      <- ggml_new_tensor_2d(cs, GGML_TYPE_F32, S * S, M + 1L)
   st$action <- ggml_new_tensor_1d(cs, GGML_TYPE_I32, n)
   st$buffer <- ggml_backend_alloc_ctx_tensors(cs, st$backend)
@@ -239,7 +241,7 @@ cube_build_step <- function(st, src, dst) {
   g <- st$ctx_graph
   S <- st$S; n <- st$n; f <- S %/% 6L
   p <- ggml_reshape_3d(g, ggml_get_rows(g, st$P, st$action), S, S, n)
-  x <- ggml_mul_mat(g, p, st$state[[src]])                    # [S, 6, n]
+  x <- ggml_mul_mat(g, p, ggml_reshape_3d(g, st$state[[src]], S, 6, n))   # [S, 6, n]
   # stickers of each colour per face: [1, 6 faces, 6 colours, n]
   cnt <- ggml_sum_rows(g, ggml_reshape_4d(g, x, f, 6, 6, n))
   full <- ttt_ind(g, ggml_scale_bias(g, cnt, 1, -(f - 1)))     # 1 where count == f
@@ -250,7 +252,7 @@ cube_build_step <- function(st, src, dst) {
 
   graph <- ggml_build_forward_expand(g, out$obs)
   ggml_graph_expand(graph, out$solved)
-  ggml_graph_expand(graph, ggml_cpy(g, x, st$state[[dst]]))
+  ggml_graph_expand(graph, ggml_cpy(g, out$obs, st$state[[dst]]))
   sched <- ggml_backend_sched_new(list(st$backend), parallel = FALSE)
   ggml_backend_sched_alloc_graph(sched, graph)
   list(graph = graph, sched = sched, out = out)
@@ -266,14 +268,21 @@ cube_apply <- function(st, action) {
 }
 
 # all games to solved, then the moves of `acts` (n x d) on the device;
-# returns the observations as S*6 x n
-cube_device_walk <- function(st, acts) {
+# returns the observations as S*6 x n (NULL with download = FALSE: they are
+# then only in st$state[[st$cur]])
+cube_device_walk <- function(st, acts, download = TRUE) {
   solved <- cube_onehot(matrix((seq_len(st$S) - 1L) %/% (st$S %/% 6L), st$n, st$S,
                                byrow = TRUE))
   ggml_backend_tensor_set_data(st$state[[st$cur]], as.numeric(solved))
-  if (!ncol(acts)) return(solved)
+  if (!ncol(acts)) return(if (download) solved)
   for (t in seq_len(ncol(acts))) out <- cube_apply(st, acts[, t])
-  matrix(ggml_backend_tensor_get_data(out$obs), st$S * 6L, st$n)
+  if (download) matrix(ggml_backend_tensor_get_data(out$obs), st$S * 6L, st$n)
+}
+
+# the current state [S*6, n] as the device observation; it also
+# holds the resets written on the host, unlike the step graph's output
+cube_device_obs <- function(st) {
+  new_rl_device_obs(st$state[[st$cur]], st$backend, st$n, st$S * 6L)
 }
 
 #' @export
@@ -281,6 +290,10 @@ rl_reset.rl_gpu_cube <- function(env, seed = NULL) {
   st <- env$st
   acts <- cube_walk_actions(st$n, st$scramble, st$M)
   st$steps_done <- integer(st$n)
+  if (env$device == "gpu") {
+    cube_device_walk(st, acts, download = FALSE)
+    return(cube_device_obs(st))
+  }
   t(cube_device_walk(st, acts))
 }
 
@@ -292,26 +305,39 @@ rl_step.rl_gpu_cube <- function(env, action) {
   if (anyNA(action) || any(action < 0L | action >= st$M))
     stop("actions must be move indices 0..", st$M - 1L)
   out <- cube_apply(st, action)
-  obs <- matrix(ggml_backend_tensor_get_data(out$obs), st$S * 6L, st$n)
+  dev <- env$device == "gpu"
+  per <- st$S * 6L
+  # on the GPU the observation stays on the device (see cube_device_obs())
+  obs <- if (!dev) matrix(ggml_backend_tensor_get_data(out$obs), per, st$n)
   terminated <- ggml_backend_tensor_get_data(out$solved) > 0.5
   st$steps_done <- st$steps_done + 1L
   truncated <- !terminated & st$steps_done >= st$max_steps
   final_obs <- NULL
   done <- which(terminated | truncated)
   if (length(done)) {
-    if (any(truncated)) final_obs <- t(obs)
+    if (any(truncated)) {
+      if (dev) {
+        # only the truncated games' columns come down; the other rows are NA
+        final_obs <- matrix(NA_real_, st$n, per)
+        for (k in which(truncated)) {
+          final_obs[k, ] <- ggml_backend_tensor_get_data(
+            out$obs, offset = as.double(k - 1L) * per * 4, n_elements = per)
+        }
+      } else {
+        final_obs <- t(obs)
+      }
+    }
     # new scrambles for the finished games, written in place on the device
     col <- cube_host_scramble(st$perms, cube_walk_actions(length(done), st$scramble, st$M))
     oh <- cube_onehot(col)
-    per <- st$S * 6L
     for (k in seq_along(done)) {
       ggml_backend_tensor_set_data(st$state[[st$cur]], oh[, k],
                                    offset = as.double(done[k] - 1L) * per * 4)
     }
-    obs[, done] <- oh
+    if (!dev) obs[, done] <- oh
     st$steps_done[done] <- 0L
   }
-  res <- list(obs = t(obs), reward = as.numeric(terminated),
+  res <- list(obs = if (dev) cube_device_obs(st) else t(obs), reward = as.numeric(terminated),
               terminated = terminated, truncated = truncated,
               legal = matrix(TRUE, st$n, st$M))
   if (!is.null(final_obs)) res$final_obs <- final_obs

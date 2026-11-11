@@ -194,6 +194,7 @@ rl_cube_q <- function(n_moves = 20L, k_min = 2L, hidden = c(1024L, 512L), blocks
 #' env$move_names[max.col(-q, "first")]   # the move the model rates best
 #' }
 rl_cube_q_values <- function(model, obs) {
+  obs <- obs_host(obs)
   meta <- model$meta
   q <- with_policy_modes(model, policy_forward(model$net, t(obs))$q)
   t(q) * meta$y_sd + meta$y_mu

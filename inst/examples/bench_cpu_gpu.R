@@ -63,7 +63,7 @@ if (length(args) && args[1] == "--worker") {
   # rl_act is the collection path, which the update mode does not touch.
   r <- runs$plain
   model <- r$algo$model(r$state)
-  obs <- rl_reset(r$env)
+  obs <- as.matrix(rl_reset(r$env))   # GPU environments return an rl_device_obs
   act_ms <- function(o, reps) {
     rl_act(model, o)
     1000 * system.time(for (i in seq_len(reps)) rl_act(model, o))[["elapsed"]] / reps

@@ -2,7 +2,12 @@ devices <- "cpu"
 if (ggml_vulkan_available() && ggml_vulkan_device_count() > 0L) devices <- c(devices, "gpu")
 
 # Play a sequence of moves in a single game; returns the list of step results.
-play <- function(env, moves) lapply(moves, function(m) rl_step(env, m))
+# obs comes to the host right away: a device obs is valid only until the next step
+play <- function(env, moves) lapply(moves, function(m) {
+  r <- rl_step(env, m)
+  r$obs <- as.matrix(r$obs)
+  r
+})
 
 for (dev in devices) {
   test_that(paste("tictactoe win, reset and canonical obs on", dev), {
@@ -16,7 +21,7 @@ for (dev in devices) {
     w <- rl_step(env, 2)                      # X completes the top row
     expect_equal(w$reward, 1)
     expect_true(w$terminated)
-    expect_equal(as.numeric(w$obs), rep(0, 9))  # same-step reset
+    expect_equal(as.numeric(as.matrix(w$obs)), rep(0, 9))  # same-step reset
     expect_equal(w$player, 1L)
     expect_true(all(rl_legal_actions(env)))
   })
@@ -82,7 +87,12 @@ test_that("tictactoe gpu matches cpu", {
   moves <- matrix(sample(0:8, 64 * 12, replace = TRUE), 64)
   run <- function(dev) {
     env <- rl_gpu_env("tictactoe", n = 64, device = dev)
-    lapply(1:12, function(i) rl_step(env, moves[, i]))
+    # obs to the host at once: a device obs is valid only until the next step
+    lapply(1:12, function(i) {
+      r <- rl_step(env, moves[, i])
+      r$obs <- as.matrix(r$obs)
+      r
+    })
   }
   expect_equal(run("cpu"), run("gpu"))
 })

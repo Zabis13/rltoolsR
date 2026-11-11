@@ -102,22 +102,95 @@ policy_logp <- function(logits, legal) {
   ag_log_softmax(ag_add(logits, ag_tensor(PPO_MASK * (1 - legal))))
 }
 
-# The same masked log-softmax on the host, for collection: the logits are
-# downloaded there anyway (logp of the taken action), and computing it on the
-# device instead costs two more launches per step (+24% collect, measured)
-# until the forward and action selection become one graph. With f32 matmuls it
-# agrees with policy_logp() to ~1e-7.
-host_logp <- function(logits, legal) {
-  logits <- logits + PPO_MASK * (1 - legal)
-  m <- apply(logits, 2, max)
-  z <- sweep(logits, 2, m)
-  sweep(z, 2, log(colSums(exp(z))))
+# Discrete policies: forward, mask, choice of the action, its log-probability
+# and the value as one recorded graph (one launch, one download). The host
+# sends the observations, the mask penalty and a two-number key, and gets back
+# only `a` (0-based), `logp` and `value`, one per observation -- the logits
+# never leave the device.
+#
+# `legal` is [n_actions, B], 1 = allowed. Sampling is Gumbel-max with noise
+# drawn on the device from `key` (ggmlR::ag_rand): the same key gives the same
+# actions, so runif() keys make a run follow set.seed(). logp is the same masked
+# log-softmax as policy_logp() in the update.
+#
+# `greedy` takes the most likely legal action (ties -> first) and returns only
+# `a`: the argmax of the masked logits (log-softmax does not move it), so the
+# graph has no log-softmax and no gather, and the value is not an output.
+policy_act <- function(net, x, norm = NULL, legal, greedy = FALSE,
+                       key = stats::runif(2L)) {
+  pen <- PPO_MASK * (1 - legal)
+  key <- matrix(as.numeric(key)[1:2], 2L, 1L)
+  body <- policy_act_body(net, greedy)
+  cache <- net$captured
+  if (is.null(cache)) {                # a net built without the cache
+    res <- lapply(body(obs_input(x, norm), ag_tensor(pen), key), as.matrix)
+  } else {
+    params <- unname(net$parameters())
+    id <- paste0("act_", if (greedy) "greedy" else "sample")
+    if (is.null(norm)) {
+      if (is.null(cache[[id]]))
+        cache[[id]] <- ag_capture(function(x, pen, key) body(x, pen, key), params = params)
+      res <- cache[[id]](x = x, pen = pen, key = key)
+    } else {
+      # clip is a constant of the graph, so one recording per value
+      id <- paste0(id, "_norm_", format(norm$clip_obs, digits = 17))
+      if (is.null(cache[[id]])) {
+        clip <- norm$clip_obs
+        cache[[id]] <- ag_capture(
+          function(x, m, s, pen, key) body(obs_normalize(x, m, s, clip), pen, key),
+          params = params)
+      }
+      res <- cache[[id]](x = x, m = matrix(norm$mean), s = obs_scale(norm), pen = pen, key = key)
+    }
+  }
+  a <- as.integer(round(as.numeric(res$a)))
+  if (greedy) return(list(a = a))
+  list(a = a, logp = as.numeric(res$logp), value = as.numeric(res$value))
+}
+
+# The graph of policy_act(): features h -> a (and logp, value unless greedy).
+policy_act_body <- function(net, greedy) {
+  function(h, pen, key) {
+    out <- net$forward(h)
+    if (greedy) return(list(a = ag_argmax(ag_add(out$logits, pen), as_tensor = TRUE)))
+    lp <- ag_log_softmax(ag_add(out$logits, pen))
+    a <- ag_sample_categorical(lp, key = key)
+    list(a = a, logp = ag_gather(lp, a), value = out$value)
+  }
+}
+
+# Device observation path of the collection (GPU environments, see
+# rl_device_obs): the observations are columns of an ag_buffer, read inside
+# the recording by 0-based column index (ag_get_rows), so only the indices
+# cross the bus. The recordings live in `cache` -- the trainer's captures,
+# freed together with the buffer -- under `id` (one per network). No
+# normalization: that path keeps the observations on the host.
+policy_act_buf <- function(net, buf, idx, legal, cache, id, key = stats::runif(2L)) {
+  pen <- PPO_MASK * (1 - legal)
+  key <- matrix(as.numeric(key)[1:2], 2L, 1L)
+  if (is.null(cache[[id]])) {
+    body <- policy_act_body(net, greedy = FALSE)
+    cache[[id]] <- ag_capture(function(idx, pen, key) body(ag_get_rows(buf, idx), pen, key),
+                              params = c(unname(net$parameters()), list(buf)))
+  }
+  res <- cache[[id]](idx = idx, pen = pen, key = key)
+  list(a = as.integer(round(as.numeric(res$a))), logp = as.numeric(res$logp),
+       value = as.numeric(res$value))
+}
+
+# The value of buffer columns `idx` (the bootstrap after the last step).
+policy_value_buf <- function(net, buf, idx, cache, id) {
+  if (is.null(cache[[id]]))
+    cache[[id]] <- ag_capture(function(idx) list(value = net$forward(ag_get_rows(buf, idx))$value),
+                              params = c(unname(net$parameters()), list(buf)))
+  as.numeric(cache[[id]](idx = idx)$value)
 }
 
 #' Choose actions with a trained policy
 #'
 #' @param model Result of [rl_ppo_train()] or [rl_load_model()].
-#' @param obs Observation matrix, one row per environment.
+#' @param obs Observation matrix, one row per environment, or an [rl_device_obs]
+#'   (downloaded here).
 #' @param legal Optional logical matrix of legal actions (same rows as `obs`).
 #'   Ignored for continuous actions.
 #' @param greedy `TRUE` for the most likely (legal) action, `FALSE` to sample.
@@ -137,15 +210,22 @@ host_logp <- function(logits, legal) {
 #' rl_act(m, obs, rl_legal_actions(g))
 #' }
 rl_act <- function(model, obs, legal = NULL, greedy = TRUE) {
+  obs <- obs_host(obs)
   with_policy_modes(model, {
-    d <- policy_dist(model, obs, legal)
-    if (identical(model$meta$action_type, "box")) {
-      a <- if (greedy) d$mu else as.matrix(ag_sample_normal(d$mu, d$log_std))
+    meta <- model$meta
+    if (identical(meta$action_type, "box")) {
+      a <- if (greedy) {
+        policy_dist(model, obs, legal)$mu
+      } else {
+        norm <- if (isTRUE(meta$normalize_obs)) meta$obs_norm
+        policy_act_box(model$net, t(obs), norm, meta$act_dim)$a
+      }
       clip_to_space(a, model$meta$action_space)
     } else {
-      # greedy: argmax of the masked logits (log-softmax does not move it),
-      # ties -> first; sampling: Gumbel-max
-      if (greedy) ag_argmax(d$logits) else ag_sample_categorical(d$logits)
+      # one launch: the action is picked on the device, only it comes back
+      if (is.null(legal)) legal <- matrix(TRUE, nrow(obs), meta$n_actions)
+      norm <- if (isTRUE(meta$normalize_obs)) meta$obs_norm
+      policy_act(model$net, t(obs), norm, t(legal) * 1, greedy = greedy)$a
     }
   })
 }
@@ -168,6 +248,7 @@ with_policy_modes <- function(model, expr) {
 # source of these for rl_act() and rl_evaluate(), so their sampling cannot
 # drift apart. Call it inside with_policy_modes().
 policy_dist <- function(model, obs, legal = NULL) {
+  obs <- obs_host(obs)
   meta <- model$meta
   norm <- if (isTRUE(meta$normalize_obs)) meta$obs_norm
   # one captured launch; the outputs come back as small matrices, and the
@@ -239,6 +320,14 @@ rl_ppo_act <- rl_act
 #'   dispatch. Same results as the ordinary path (to rounding; checked on
 #'   tic-tac-toe and Pendulum, several seeds). Measured on the GPU: update 3.6x
 #'   (tic-tac-toe) and 5.4x (Pendulum) faster. `FALSE` runs the ordinary path.
+#' @param rollout Where the collection loop runs. `"resident"`: the policy and
+#'   the environment are one recorded device graph, replayed once per step with
+#'   no data crossing the bus; the rollout comes down once at the end. Needs
+#'   `rl_gpu_env("tictactoe", opponent = "self", device = "gpu")`, a GPU
+#'   network, `capture = TRUE`, no `pool` and no `normalize_obs`; the games
+#'   then live in the collection's own device buffers and `env` itself is not
+#'   stepped. `"host"`: a loop in R, one step of the environment per
+#'   iteration. `"auto"` (the default) picks `"resident"` when possible.
 #' @param pool `NULL` (plain self-play, the default), `TRUE` or a list with
 #'   any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
 #'   against a pool of past policies, for two-player self-play environments
@@ -271,8 +360,9 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
                    ent_coef = 0.03, hidden = 64, normalize_obs = NULL,
                    normalize_reward = NULL, clip_obs = 10, clip_reward = 10,
                    epsilon = 1e-8, max_grad_norm = NULL, capture = TRUE,
-                   pool = NULL) {
+                   pool = NULL, rollout = c("auto", "host", "resident")) {
   pool <- ppo_pool_args(pool)
+  rollout <- match.arg(rollout)
   if (!is.null(max_grad_norm) &&
       (!is.numeric(max_grad_norm) || length(max_grad_norm) != 1L ||
        !is.finite(max_grad_norm) || max_grad_norm <= 0))
@@ -369,12 +459,41 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     n_env <- env$n
     obs_dim <- meta$obs_dim
     turn_sign <- state$turn_sign
+    if (is.null(state$obs_path) && rollout != "host") {
+      ok <- ppo_res_ok(env, box, !is.null(pool), capture, meta, state$device)
+      if (ok) state$obs_path <- "resident" else if (rollout == "resident")
+        stop("rl_ppo(rollout = \"resident\") needs rl_gpu_env(\"tictactoe\", ",
+             "opponent = \"self\", device = \"gpu\"), a GPU network, capture = TRUE, ",
+             "no pool and no normalize_obs", call. = FALSE)
+    }
+    if (identical(state$obs_path, "resident")) return(collect_resident(state, env))
     if (is.null(state[["obs"]])) {
       state$obs <- rl_reset(env)
       state$legal <- if (!box) legal_of(env, NULL, meta$n_actions)
       state$ret_track <- numeric(n_env)
       state$ply <- integer(n_env)
       state$vs_pool <- NULL                         # fresh games: draw anew
+    }
+    if (is.null(state$obs_path)) {
+      # chosen once per training: observations on the environment's device
+      # (rl_device_obs), a GPU network, captured updates and no observation
+      # statistics (they need the observations on the host). Not in the
+      # history: a constant there would break resuming older checkpoints.
+      state$obs_path <- if (inherits(state[["obs"]], "rl_device_obs") && !box && capture &&
+                            !meta$normalize_obs && identical(state$device, "gpu"))
+        "device" else "host"
+    }
+    dev <- state$obs_path == "device"
+    if (dev) {
+      # columns t * n_env + i of the rollout (the host b_obs layout), plus one
+      # slice for the observation after the last step
+      N_obs <- n_env * n_steps
+      buf <- state$captures$obs_buf
+      if (is.null(buf)) {
+        buf <- ag_buffer(obs_dim, N_obs + n_env)
+        state$captures$obs_buf <- buf
+      }
+      cols0 <- seq_len(n_env) - 1
     }
     fsp <- !is.null(pool)
     if (fsp) {
@@ -391,7 +510,7 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     legal <- state$legal
 
     n_t <- n_steps
-    b_obs <- array(0, c(obs_dim, n_env, n_t))
+    if (!dev) b_obs <- array(0, c(obs_dim, n_env, n_t))
     if (box) {
       b_act <- array(0, c(meta$act_dim, n_env, n_t))
     } else {
@@ -402,40 +521,50 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     n_done <- 0
     tk <- prof_start()
     for (t in seq_len(n_t)) {
-      x <- t(obs)
-      out <- policy_forward(net, x, norm)          # captured: launch + download
-      tk <- prof_tick(tk, "collect: forward")
+      if (dev) {
+        # device -> device before the next rl_step overwrites the tensor
+        idx <- (t - 1L) * n_env + cols0
+        ag_buffer_copy_from(buf, obs$tensor, obs$backend, col_offset = idx[1])
+      } else {
+        x <- t(obs_host(obs))
+      }
       if (box) {
-        mu <- out$mu
-        log_std <- as.numeric(out$log_std)
-        tk <- prof_tick(tk, "collect: download")
-        a <- as.matrix(ag_sample_normal(mu, matrix(log_std, ncol = 1L)))
-        tk <- prof_tick(tk, "collect: select")
+        # forward + noise + action + logp + value: one launch
+        out <- policy_act_box(net, x, norm, meta$act_dim)
+        a <- out$a
+        tk <- prof_tick(tk, "collect: forward")
         r <- rl_step(env, clip_to_space(a, meta$action_space))
         tk <- prof_tick(tk, "collect: env")
         b_act[, , t] <- a
-        b_logp[, t] <- gauss_logp(a, mu, log_std)
+        b_logp[, t] <- out$logp
       } else {
-        logits <- out$logits
+        # forward + mask + choice + logp + value: one launch, three rows back
+        lg <- t(legal) * 1
+        key <- stats::runif(2L)
+        out <- if (dev) policy_act_buf(net, buf, idx, lg, state$captures, "obs_act", key) else
+          policy_act(net, x, norm, lg, key = key)
+        a <- out$a
+        logp <- out$logp
         if (fsp) {
           # the snapshot moves where it is its side's turn (X at even plies)
           opp <- state$vs_pool & (state$ply %% 2L) != state$side
           if (any(opp)) {
-            logits[, opp] <- policy_forward(state$opp_net, x, norm)$logits[, opp, drop = FALSE]
+            o <- if (dev) policy_act_buf(state$opp_net, buf, idx, lg, state$captures,
+                                         "obs_act_opp", key) else
+              policy_act(state$opp_net, x, norm, lg, key = key)
+            a[opp] <- o$a[opp]
+            logp[opp] <- o$logp[opp]
           }
           b_keep[, t] <- !opp
         }
-        tk <- prof_tick(tk, "collect: download")
-        logp_all <- host_logp(logits, t(legal) * 1)
-        a <- ag_sample_categorical(logp_all)
-        tk <- prof_tick(tk, "collect: select")
+        tk <- prof_tick(tk, "collect: forward")
         r <- rl_step(env, a)
         tk <- prof_tick(tk, "collect: env")
-        b_legal[, , t] <- t(legal) * 1
+        b_legal[, , t] <- lg
         b_act[, t] <- a
-        b_logp[, t] <- logp_all[cbind(a + 1L, seq_len(n_env))]
+        b_logp[, t] <- logp
       }
-      b_obs[, , t] <- x
+      if (!dev) b_obs[, , t] <- x
       v_t <- as.numeric(out$value)
       tk <- prof_tick(tk, "collect: download")
       b_val[, t] <- v_t
@@ -477,25 +606,22 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       if (!box) legal <- legal_of(env, r$legal, meta$n_actions)
       tk <- prof_tick(tk, "collect: buffer")
     }
-    last_val <- as.numeric(policy_forward(net, t(obs), norm)$value)
+    last_val <- if (dev) {
+      ag_buffer_copy_from(buf, obs$tensor, obs$backend, col_offset = N_obs)
+      policy_value_buf(net, buf, N_obs + cols0, state$captures, "obs_value")
+    } else {
+      as.numeric(policy_forward(net, t(obs_host(obs)), norm)$value)
+    }
     tk <- prof_tick(tk, "collect: bootstrap")
 
-    # ---- GAE (value of the next state is from the next mover's view) ----
-    adv <- matrix(0, n_env, n_t)
-    next_val <- last_val
-    next_adv <- numeric(n_env)
-    for (t in n_t:1) {
-      nd <- 1 - b_done[, t]
-      delta <- b_rew[, t] + gamma * nd * turn_sign * next_val - b_val[, t]
-      adv[, t] <- delta + gamma * lambda * nd * turn_sign * next_adv
-      next_val <- b_val[, t]
-      next_adv <- adv[, t]
-    }
+    adv <- ppo_gae(b_rew, b_val, b_done, last_val, gamma, lambda, turn_sign)
     ret <- adv + b_val
 
     N <- n_env * n_t
     state$rollout <- list(
-      obs = matrix(b_obs, obs_dim, N),
+      # device path: buffer columns (0-based) instead of the host matrix
+      obs = if (!dev) matrix(b_obs, obs_dim, N),
+      cols = if (dev) seq_len(N) - 1,
       act = if (box) matrix(b_act, meta$act_dim, N) else as.integer(b_act),
       legal = if (!box) matrix(b_legal, meta$n_actions, N),
       logp = as.numeric(b_logp), adv = as.numeric(adv), ret = as.numeric(ret),
@@ -510,7 +636,7 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         max(min(n_use, 64L), n_use %/% 64L * 64L)
       if (n_use < length(keep)) keep <- sort(keep[sample.int(length(keep), n_use)])
       ro <- state$rollout
-      ro$obs <- ro$obs[, keep, drop = FALSE]
+      if (dev) ro$cols <- ro$cols[keep] else ro$obs <- ro$obs[, keep, drop = FALSE]
       ro$legal <- ro$legal[, keep, drop = FALSE]
       ro[c("act", "logp", "adv", "ret")] <- lapply(ro[c("act", "logp", "adv", "ret")],
                                                    function(v) v[keep])
@@ -531,6 +657,38 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     list(state = state, steps = N, info = info)
   }
 
+  # rollout = "resident" (R/ppo_resident.R): the loop runs on the device, the
+  # rollout comes down once; GAE and the rollout list as on the host path.
+  collect_resident <- function(state, env) {
+    n_env <- env$n
+    cap <- state$captures
+    if (is.null(cap$res_step)) ppo_res_setup(state$net, cap, n_env, n_steps)
+    tk <- prof_start()
+    r <- ppo_res_rollout(cap, n_env, n_steps)
+    tk <- prof_tick(tk, "collect: resident")
+    b_rew <- r$rew
+    if (state$meta$normalize_reward) {
+      if (is.null(state$ret_track)) state$ret_track <- numeric(n_env)
+      b_ret <- matrix(0, n_env, n_steps)
+      for (t in seq_len(n_steps)) {
+        state$ret_track <- state$ret_track * gamma + b_rew[, t]
+        b_ret[, t] <- state$ret_track
+        state$ret_track[r$done[, t] > 0.5] <- 0
+        b_rew[, t] <- scale_reward(b_rew[, t], state$rew_rms, epsilon, clip_reward)
+      }
+    }
+    adv <- ppo_gae(b_rew, r$val, r$done, r$last_val, gamma, lambda, state$turn_sign)
+    N <- n_env * n_steps
+    state$rollout <- list(obs = NULL, cols = seq_len(N) - 1,
+                          act = as.integer(round(as.numeric(r$act))), legal = r$legal,
+                          logp = as.numeric(r$logp), adv = as.numeric(adv),
+                          ret = as.numeric(adv + r$val), norm = NULL)
+    if (state$meta$normalize_reward)
+      state$rew_rms <- running_stats_update(state$rew_rms, matrix(b_ret, 1L))
+    prof_tick(tk, "collect: gae")
+    list(state = state, steps = N, info = c(episodes = sum(r$done)))
+  }
+
   update <- function(state) {
     ro <- state$rollout
     N <- length(ro$logp)
@@ -545,7 +703,10 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         # update and charged to its "prep" stage
         prof_tick(tk, "update: prep")
         l <- if (capture) {
-          ppo_update_captured(state, ro$obs[, idx, drop = FALSE],
+          # device path: the minibatch's buffer columns, read in the graph
+          mb_obs <- if (!is.null(ro$cols)) list(buf = state$captures$obs_buf, idx = ro$cols[idx]) else
+            ro$obs[, idx, drop = FALSE]
+          ppo_update_captured(state, mb_obs,
                               if (!state$box) ro$legal[, idx, drop = FALSE],
                               if (state$box) ro$act[, idx, drop = FALSE] else ro$act[idx],
                               ro$logp[idx], ro$adv[idx], ro$ret[idx], clip, vf_coef,
@@ -705,7 +866,8 @@ rl_ppo_train <- function(env, iterations = 100, n_steps = 9, epochs = 4,
                          eval_fn = NULL, verbose = TRUE, log = NULL,
                          overwrite = FALSE, checkpoint = NULL,
                          checkpoint_every = 0, resume = NULL, append = FALSE,
-                         max_grad_norm = NULL, capture = TRUE, pool = NULL) {
+                         max_grad_norm = NULL, capture = TRUE, pool = NULL,
+                         rollout = c("auto", "host", "resident")) {
   env <- as_vec_env(env)
   per_iter <- n_steps * env$n
   algo <- rl_ppo(n_steps = n_steps, epochs = epochs, minibatch = minibatch,
@@ -714,7 +876,8 @@ rl_ppo_train <- function(env, iterations = 100, n_steps = 9, epochs = 4,
                  normalize_obs = normalize_obs,
                  normalize_reward = normalize_reward, clip_obs = clip_obs,
                  clip_reward = clip_reward, epsilon = epsilon,
-                 max_grad_norm = max_grad_norm, capture = capture, pool = pool)
+                 max_grad_norm = max_grad_norm, capture = capture, pool = pool,
+                 rollout = match.arg(rollout))
   rl_train(env, algo, total_steps = iterations * per_iter, device = device,
            eval_every_steps = eval_every * per_iter, eval_fn = eval_fn,
            verbose = verbose, log = log, overwrite = overwrite,
@@ -787,10 +950,15 @@ ppo_update_captured <- function(state, obs, legal, act, old_logp, adv, ret,
                                 max_grad_norm = NULL) {
   tk <- prof_start()
   net <- state$net
-  B <- ncol(obs)
+  # `obs` is a features x B matrix, or list(buf, idx): 0-based columns of the
+  # collection's ag_buffer (device observation path), then `x` carries the
+  # indices and the graph reads the columns itself
+  from_buf <- is.list(obs) && !is.null(obs$buf)
+  buf <- if (from_buf) obs$buf
+  B <- if (from_buf) length(obs$idx) else ncol(obs)
   adv <- (adv - mean(adv)) / (stats::sd(adv) + 1e-8)
-  inputs <- list(x = obs, old = matrix(old_logp, 1L), A = matrix(adv, 1L),
-                 R = matrix(ret, 1L))
+  inputs <- list(x = if (from_buf) obs$idx else obs, old = matrix(old_logp, 1L),
+                 A = matrix(adv, 1L), R = matrix(ret, 1L))
   if (state$box) {
     d <- nrow(act)
     # the graph drops the constant -d/2 log(2 pi) of the log-density
@@ -815,11 +983,14 @@ ppo_update_captured <- function(state, obs, legal, act, old_logp, adv, ret,
   }
   key <- paste(c(B, format(c(clip, vf_coef, ent_coef), digits = 17), norm_on,
                  if (norm_on) format(norm$clip_obs, digits = 17),
-                 !is.null(max_grad_norm)), collapse = "|")
+                 !is.null(max_grad_norm), if (from_buf) "buf"), collapse = "|")
   step <- state$captures[[key]]
   if (is.null(step)) {
     clip_obs <- if (norm_on) norm$clip_obs
-    x_in <- function(x, m, s) if (norm_on) obs_normalize(x, m, s, clip_obs) else x
+    x_in <- function(x, m, s) {
+      if (from_buf) x <- ag_get_rows(buf, x)
+      if (norm_on) obs_normalize(x, m, s, clip_obs) else x
+    }
     surrogate <- function(logp_a, old, A) {
       ratio <- ag_exp(ag_sub(logp_a, old))
       s1 <- ag_mul(ratio, A)
@@ -849,7 +1020,8 @@ ppo_update_captured <- function(state, obs, legal, act, old_logp, adv, ret,
         list(loss = loss, pg = pg_loss, vf = vf_loss, ent = ent)
       }
     }
-    step <- ag_capture_step(fn, optimizer = state$opt, max_grad_norm = max_grad_norm)
+    step <- ag_capture_step(fn, params = if (from_buf) list(buf), optimizer = state$opt,
+                            max_grad_norm = max_grad_norm)
     state$captures[[key]] <- step
   }
   tk <- prof_tick(tk, "update: prep")
@@ -862,10 +1034,33 @@ ppo_update_captured <- function(state, obs, legal, act, old_logp, adv, ret,
   l
 }
 
-# Release the device memory of every recorded update step; returns a fresh cache.
+# GAE over [n_env, n_t] rollouts; the value of the next state is from the
+# next mover's view (turn_sign = -1 in self-play).
+ppo_gae <- function(b_rew, b_val, b_done, last_val, gamma, lambda, turn_sign) {
+  n_t <- ncol(b_rew)
+  adv <- matrix(0, nrow(b_rew), n_t)
+  next_val <- last_val
+  next_adv <- numeric(nrow(b_rew))
+  for (t in n_t:1) {
+    nd <- 1 - b_done[, t]
+    delta <- b_rew[, t] + gamma * nd * turn_sign * next_val - b_val[, t]
+    adv[, t] <- delta + gamma * lambda * nd * turn_sign * next_adv
+    next_val <- b_val[, t]
+    next_adv <- adv[, t]
+  }
+  adv
+}
+
+# Release the device memory of every recording (update steps, device-path
+# collection) and of the collection's observation buffer, recordings first;
+# returns a fresh cache.
 ppo_free_captures <- function(captures) {
-  if (is.environment(captures))
-    for (k in ls(captures, all.names = TRUE)) ag_capture_free(captures[[k]])
+  if (is.environment(captures)) {
+    keys <- ls(captures, all.names = TRUE)
+    is_buf <- vapply(keys, function(k) inherits(captures[[k]], "ag_buffer"), logical(1))
+    for (k in keys[!is_buf]) ag_capture_free(captures[[k]])
+    for (k in keys[is_buf]) ag_buffer_free(captures[[k]])
+  }
   new.env(parent = emptyenv())
 }
 

@@ -1,3 +1,10 @@
+# rltoolsR 0.1.3
+
+* PPO picks actions on the device: forward, legal-action mask, action choice, its log-probability and the value are one graph launch during collection and in `rl_act()`; the logits are no longer downloaded.
+* Action sampling now draws its noise on the device, the same on the CPU and on the GPU: a given `set.seed()` reproduces a run, but gives a different run than 0.1.2.
+* GPU environments (`tictactoe`, `cube` with `device = "gpu"`) return observations on the device (`rl_device_obs()`); discrete PPO collects from them without downloading observations (cube collection about 3× faster).
+* Requires ggmlR (>= 0.8.9.1).
+
 # rltoolsR 0.1.2
 
 * New `rl_gpu_env("cube", n, size)` — N×N×N Rubik's cube on GPU/CPU, and `rl_cube_walks()` for labelled random walks.

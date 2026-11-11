@@ -12,7 +12,8 @@ rl_ppo_act(model, obs, legal = NULL, greedy = TRUE)
 \arguments{
 \item{model}{Result of [rl_ppo_train()] or [rl_load_model()].}
 
-\item{obs}{Observation matrix, one row per environment.}
+\item{obs}{Observation matrix, one row per environment, or an [rl_device_obs]
+(downloaded here).}
 
 \item{legal}{Optional logical matrix of legal actions (same rows as `obs`).
 Ignored for continuous actions.}

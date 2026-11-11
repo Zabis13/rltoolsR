@@ -16,7 +16,9 @@ test_that("PPO trains on GPU with losses close to CPU", {
   run <- function(dev) {
     set.seed(5)
     env <- rl_gpu_env("tictactoe", n = 128, device = dev)
-    rl_ppo_train(env, iterations = 3, minibatch = 1152, device = dev, verbose = FALSE)$history
+    # rollout = "host": the CPU run's noise; the resident rollout draws its own keys
+    rl_ppo_train(env, iterations = 3, minibatch = 1152, device = dev, verbose = FALSE,
+                 rollout = "host")$history
   }
   h_cpu <- run("cpu"); h_gpu <- run("gpu")
   expect_true(all(is.finite(as.matrix(h_gpu))))
@@ -121,12 +123,54 @@ test_that("logp at collection equals the update's first pass (f32 matmuls)", {
     prev <- ag_device(dev)
     prec <- ag_matmul_precision("f32")
     state <- algo$init(env, dev)
-    ro <- algo$collect(state, env)$state$rollout
+    st <- algo$collect(state, env)$state
+    ro <- st$rollout
+    # the device observation path (GPU environment) keeps obs in its buffer
+    obs <- if (is.null(ro$obs)) ag_buffer_read(st$captures$obs_buf, 0, length(ro$logp)) else ro$obs
     idx <- seq_len(256L)
-    out <- state$net$forward(rltoolsR:::obs_input(ro$obs[, idx], ro$norm))
+    out <- state$net$forward(rltoolsR:::obs_input(obs[, idx], ro$norm))
     lp <- as.matrix(rltoolsR:::policy_logp(out$logits, ro$legal[, idx] * 1))
     new <- lp[cbind(ro$act[idx] + 1L, seq_along(idx))]
     ag_matmul_precision(prec); ag_device(prev)
     expect_lt(max(abs(new - ro$logp[idx])), if (dev == "cpu") 1e-12 else 1e-6)
+  }
+})
+
+test_that("policy_act: one graph picks a legal action and returns its logp and value", {
+  for (dev in c("cpu", if (has_vk()) "gpu")) {
+    set.seed(31)
+    env <- rl_gpu_env("tictactoe", n = 64L, opponent = "self", device = dev)
+    algo <- rl_ppo(n_steps = 8, minibatch = 64, hidden = 32)
+    prev <- ag_device(dev)
+    prec <- ag_matmul_precision("f32")
+    state <- algo$init(env, dev)
+    net <- state$net
+    x <- matrix(rnorm(state$meta$obs_dim * 64L), ncol = 64L)
+    legal <- matrix(rbinom(state$meta$n_actions * 64L, 1, 0.6), ncol = 64L)
+    legal[1L, ] <- 1
+    # reference: the forward and policy_logp(), as in the update
+    out <- net$forward(ag_tensor(x))
+    lp <- as.matrix(rltoolsR:::policy_logp(out$logits, legal))
+    val <- as.numeric(as.matrix(out$value))
+    tol <- if (dev == "cpu") 1e-12 else 1e-5
+    col <- seq_len(64L)
+
+    s1 <- rltoolsR:::policy_act(net, x, NULL, legal, key = c(0.3, 0.7))
+    s2 <- rltoolsR:::policy_act(net, x, NULL, legal, key = c(0.3, 0.7))
+    s3 <- rltoolsR:::policy_act(net, x, NULL, legal, key = c(0.6, 0.1))
+    g <- rltoolsR:::policy_act(net, x, NULL, legal, greedy = TRUE)
+    ag_matmul_precision(prec); ag_device(prev)
+
+    expect_type(s1$a, "integer")
+    expect_identical(s2$a, s1$a)                       # same key, same actions
+    expect_false(identical(s3$a, s1$a))                # new key, new actions
+    expect_true(all(legal[cbind(g$a + 1L, col)] == 1))
+    expect_named(g, "a")                               # greedy: the action only
+    for (s in list(s1, s3)) {
+      expect_true(all(legal[cbind(s$a + 1L, col)] == 1))
+      expect_lt(max(abs(s$logp - lp[cbind(s$a + 1L, col)])), tol)
+      expect_lt(max(abs(s$value - val)), tol)
+    }
+    expect_identical(g$a, apply(lp, 2, which.max) - 1L)
   }
 })

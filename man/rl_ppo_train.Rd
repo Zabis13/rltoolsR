@@ -34,7 +34,8 @@ rl_ppo_train(
   append = FALSE,
   max_grad_norm = NULL,
   capture = TRUE,
-  pool = NULL
+  pool = NULL,
+  rollout = c("auto", "host", "resident")
 )
 }
 \arguments{
@@ -145,6 +146,15 @@ history columns `used` (transitions trained on), `pool_games` (finished
 games against the pool), `pool_win` and `pool_loss` (the learner's share of
 wins and of losses in them, the rest draws) and `pool_win_x`, `pool_win_o`
 (the share of wins with the learner as X / as O); `NA` when no games.}
+
+\item{rollout}{Where the collection loop runs. `"resident"`: the policy and
+the environment are one recorded device graph, replayed once per step with
+no data crossing the bus; the rollout comes down once at the end. Needs
+`rl_gpu_env("tictactoe", opponent = "self", device = "gpu")`, a GPU
+network, `capture = TRUE`, no `pool` and no `normalize_obs`; the games
+then live in the collection's own device buffers and `env` itself is not
+stepped. `"host"`: a loop in R, one step of the environment per
+iteration. `"auto"` (the default) picks `"resident"` when possible.}
 }
 \value{
 A list of class `rl_ppo` with `net`, `device`, `meta`

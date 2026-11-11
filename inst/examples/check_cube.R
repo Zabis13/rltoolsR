@@ -28,7 +28,7 @@ for (N in 2:5) {
 n <- 64
 env <- rl_gpu_env("cube", n = n, size = 3, scramble = 1, max_steps = 30, device = device)
 print(env)
-obs <- rl_reset(env)
+obs <- as.matrix(rl_reset(env))   # device = "gpu" returns an rl_device_obs
 ok(all(dim(obs) == c(n, 324)) && all(rowSums(obs) == 54), "reset: one-hot 324 per game")
 
 # scramble 1: the inverse of the scramble solves -- find it by trying all
@@ -40,14 +40,14 @@ for (m in 0:17) {
 }
 ok(all(rowSums(solved_by) >= 1), "reset at depth 1 equals one host move")
 first <- max.col(solved_by, "first") - 1L
-r <- rl_step(env, bitwXor(first, 1L))
+r <- rl_step(env, bitwXor(first, 1L)); r$obs <- as.matrix(r$obs)
 ok(all(r$terminated) && all(r$reward == 1), "inverse move solves: terminated, reward 1")
 ok(all(rowSums(r$obs) == 54) && all(!r$truncated), "solved games auto-reset")
 
 # device step equals host step
 acts <- sample(0:17, n, replace = TRUE)
 prev <- r$obs
-r2 <- rl_step(env, acts)
+r2 <- rl_step(env, acts); r2$obs <- as.matrix(r2$obs)
 host <- t(sapply(seq_len(n), function(i) {
   o <- matrix(prev[i, ], 54, 6); col <- max.col(o) - 1L
   as.vector(rltoolsR:::cube_onehot(matrix(col[st$perms[acts[i] + 1, ]], 1)))

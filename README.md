@@ -4,11 +4,11 @@ Reinforcement learning toolkit for R: environments, algorithms and training on t
 
 > Not to be confused with [Rtools](https://cran.r-project.org/bin/windows/Rtools/), the R build toolchain for Windows.
 
-> Status: early development (v0.1.2). The API is not stable yet.
+> Status: early development (v0.1.3). The API is not stable yet.
 
 ## Features
 
-- Neural networks run on GPU through ggmlR (Vulkan): forward and backward passes and Adam during training, each update step recorded once as a captured graph and replayed; the forward pass in `rl_act()`. Action masking, argmax and sampling run through ggmlR ops on the forward outputs. GPU environments run as ggml graphs. `device = "auto"` falls back to the CPU when no Vulkan device is found.
+- Neural networks run on GPU through ggmlR (Vulkan): forward and backward passes and Adam during training, each update step recorded once as a captured graph and replayed; during PPO collection and in `rl_act()` the forward pass, legal-action mask, action choice (argmax or sampling), its log-probability and the value are one recorded graph launch -- only the actions, log-probabilities and values come back to R. Sampling noise is drawn on the device from a key taken from R's RNG, so `set.seed()` reproduces a run and the CPU and the GPU draw the same noise. GPU environments run as ggml graphs. `device = "auto"` falls back to the CPU when no Vulkan device is found.
 - Environments:
   - `rl_env(name)`: continuous control in C++, ported from [RLtools](https://github.com/rl-tools/rl-tools): `pendulum`, `acrobot`, `acrobot_swingup`, `car`, `car_track`
   - `rl_vec_env(name, n)`: `n` copies stepped in one call, auto-reset with `final_obs`
