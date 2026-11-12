@@ -21,6 +21,11 @@
 #   2. the hidden-layer matmul [64,64] x [64,n_env], matmul_precision "f32"
 #      (as rl_train() runs) vs "default", per matmul
 #   3. collect stages from rl_prof, and ppo_gae() alone
+#   4. the parts of the rollout in their real order (one pass, a time stamp
+#      after each), with a fixed and with a fresh noise key
+#   5. the repeat timed after each other part, and the count of recordings
+#      thrown away as stale
+#   6. the repeat against the GPU core clock (amdgpu sysfs), by phase
 # perf: GPU time of every node of ONE step graph (GGML_VK_PERF_LOGGER; it
 #   synchronizes after each graph, so do not read wall times in this mode).
 #
@@ -169,8 +174,121 @@ print(round(stage_us, 1))
 cat(sprintf("   of which ppo_gae alone %.1f us; collect minus stages %.0f us\n",
             gae_us, us[["collect"]] - sum(stage_us)))
 
+# ---- 4. the rollout in its real order --------------------------------------
+# The body of ppo_res_rollout() with a time stamp after every part: each part
+# pays what it pays after the previous one (a buffer changed on the device, a
+# different graph), not what it pays repeated alone as above.
+seq_us <- function(fresh) {
+  one <- function() {
+    k <- if (fresh) matrix(rltoolsR:::ppo_res_key(), 2, 1) else key
+    s <- numeric(7)
+    s[1] <- Sys.time()
+    ag_buffer_write(cap$res_cnt, z, col_offset = 0);                         s[2] <- Sys.time()
+    ag_capture_repeat(cap$res_step, n_steps, cols = cols, key = k, z = z);   s[3] <- Sys.time()
+    last_val <- as.numeric(cap$res_value(cols = cols)$value);                s[4] <- Sys.time()
+    rec <- ag_buffer_read(cap$res_rec);                                      s[5] <- Sys.time()
+    legal <- ag_buffer_read(cap$res_legal);                                  s[6] <- Sys.time()
+    for (i in 1:5) matrix(rec[i, ], n_env, n_steps);                         s[7] <- Sys.time()
+    1e6 * diff(s)
+  }
+  for (i in 1:3) one()
+  m <- vapply(seq_len(iters * 5L), function(j) one(), numeric(6))
+  stats::setNames(apply(m, 1, stats::median),
+                  c("cnt_reset", "repeat", "bootstrap", "dl_rec", "dl_legal", "split"))
+}
+seq_fixed <- seq_us(FALSE)
+seq_fresh <- seq_us(TRUE)
+whole_us <- per_call(function() rltoolsR:::ppo_res_rollout(cap, n_env, n_steps), k = 5L)
+cat("4. rollout in its real order, us per part (median); alone = the table above\n")
+print(round(rbind(
+  alone = c(us[["cnt_reset"]], us[["repeat_9"]] - us[["cnt_reset"]], us[["bootstrap"]],
+            us[["dl_rec"]], us[["dl_legal"]], NA),
+  fixed_key = seq_fixed, fresh_key = seq_fresh), 1))
+cat(sprintf("   sum: fixed key %.0f, fresh key %.0f; ppo_res_rollout() %.0f us\n",
+            sum(seq_fixed), sum(seq_fresh), whole_us))
+
+# ---- 5. what makes the repeat dearer in the real order ---------------------
+# The repeat alone (after the counter reset), timed after each of the other
+# parts of the rollout, with a fixed and with a fresh key; then how many times
+# the recorded command buffers were thrown away (stale) over 20 rollouts.
+preds <- list(
+  none      = function() NULL,
+  bootstrap = function() cap$res_value(cols = cols),
+  dl_rec    = function() ag_buffer_read(cap$res_rec),
+  dl_legal  = function() ag_buffer_read(cap$res_legal),
+  all       = function() { cap$res_value(cols = cols); ag_buffer_read(cap$res_rec)
+                           ag_buffer_read(cap$res_legal) })
+rep_after <- function(pred, fresh) {
+  one <- function() {
+    pred()
+    k <- if (fresh) matrix(rltoolsR:::ppo_res_key(), 2, 1) else key
+    ag_buffer_write(cap$res_cnt, z, col_offset = 0)
+    t0 <- Sys.time()
+    ag_capture_repeat(cap$res_step, n_steps, cols = cols, key = k, z = z)
+    1e6 * as.numeric(difftime(Sys.time(), t0, units = "secs"))
+  }
+  for (i in 1:3) one()
+  stats::median(vapply(seq_len(iters * 3L), function(j) one(), 0))
+}
+after_us <- rbind(fixed_key = vapply(preds, rep_after, 0, fresh = FALSE),
+                  fresh_key = vapply(preds, rep_after, 0, fresh = TRUE))
+cat("5. repeat of 9 steps, us (median), after: \n")
+print(round(after_us, 1))
+n_free <- 0L
+suppressMessages(trace(".ag_capture_vk_rec_free", where = asNamespace("ggmlR"), print = FALSE,
+                       tracer = quote(assign("n_free", get("n_free", globalenv()) + 1L,
+                                             globalenv()))))
+for (i in 1:20) rltoolsR:::ppo_res_rollout(cap, n_env, n_steps)
+suppressMessages(untrace(".ag_capture_vk_rec_free", where = asNamespace("ggmlR")))
+cat(sprintf("   recordings thrown away (stale) over 20 rollouts: %d\n", n_free))
+
+# ---- 6. the repeat against the GPU core clock ------------------------------
+# The time of the repeat follows the core clock of the GPU (a replay is one
+# submit and a spin on the fence: device time; measured once with timestamp
+# queries around the batch). After each repeat the clock is read from sysfs
+# (amdgpu pp_dpm_sclk). Compare timings only at a fixed clock:
+#   echo high | sudo tee /sys/class/drm/card*/device/power_dpm_force_performance_level
+# Phases, 150 repeats each: updates first (the state collect starts in), then
+#   order_1  rollouts in their real order      pure  the repeat alone
+#   order_2  the real order again
+sclk_file <- Sys.glob("/sys/class/drm/card*/device/pp_dpm_sclk")
+sclk <- function() {
+  if (!length(sclk_file)) return(NA_real_)
+  l <- grep("\\*", readLines(sclk_file[1L], warn = FALSE), value = TRUE)
+  if (length(l)) as.numeric(sub(".*: *([0-9]+) *[Mm]hz.*", "\\1", l[1L])) else NA_real_
+}
+timed <- function(real_order, n = 150L) {
+  t(vapply(seq_len(n), function(j) {
+    if (real_order) {
+      cap$res_value(cols = cols); ag_buffer_read(cap$res_rec); ag_buffer_read(cap$res_legal)
+    }
+    k <- matrix(rltoolsR:::ppo_res_key(), 2, 1)
+    ag_buffer_write(cap$res_cnt, z, col_offset = 0)
+    t0 <- Sys.time()
+    ag_capture_repeat(cap$res_step, n_steps, cols = cols, key = k, z = z)
+    r_wall <- 1e6 * as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    c(us = r_wall, sclk = sclk())
+  }, numeric(2)))
+}
+warm()                                    # collect + update, as in training
+ph <- list(order_1 = timed(TRUE), pure = timed(FALSE), order_2 = timed(TRUE))
+cat("6. repeat of 9 steps, us, and the GPU core clock after it, MHz\n")
+print(round(t(vapply(ph, function(m) c(
+  stats::quantile(m[, "us"], c(.05, .5, .95)),
+  stats::quantile(m[, "sclk"], c(.05, .5, .95), na.rm = !all(is.na(m[, "sclk"])))),
+  numeric(6), USE.NAMES = TRUE)), 0))
+cat("   columns: us 5% / 50% / 95%, then MHz 5% / 50% / 95%\n")
+if (!all(is.na(unlist(lapply(ph, function(m) m[, "sclk"]))))) {
+  cat("   repeats per 100 MHz of core clock\n")
+  print(table(phase = factor(rep(names(ph), each = 150L), names(ph)),
+              MHz = 100 * floor(unlist(lapply(ph, function(m) m[, "sclk"])) / 100),
+              useNA = "ifany"))
+}
+
 out_file <- "/tmp/bench_resident_parts.rds"
-saveRDS(list(us = us, slope = slope, intercept = icpt, host = host,
+saveRDS(list(us = us, slope = slope, intercept = icpt, host = host, after_us = after_us,
+             n_stale = n_free, replay_timing = ph,
+             seq_fixed = seq_fixed, seq_fresh = seq_fresh, rollout_us = whole_us,
              record_wait = rw, matmul_us = mm_us, stage_us = stage_us, gae_us = gae_us,
              n_env = n_env, n_steps = n_steps, iters = iters), out_file)
 cat("saved", out_file, "\n")

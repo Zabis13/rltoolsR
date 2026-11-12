@@ -62,6 +62,17 @@ cube_q_build <- function(meta) cube_q_net(meta$obs_dim, meta$n_actions, meta$hid
 #' @param lr,lr_min,warmup,updates,sched Learning-rate schedule; `updates`
 #'   is the length of the cosine, normally `total_steps / env$n`.
 #' @param max_grad_norm Optional gradient clipping.
+#' @param walks Where the walks are made. `"resident"`: on the training
+#'   device -- the moves are drawn and made in one recorded graph, all steps
+#'   of a walk queued in one go, and the training step reads the end states
+#'   and the labels there; per iteration only a noise key crosses the bus.
+#'   The walks then live in the algorithm's own device buffers and the games
+#'   of `env` are left alone. `"host"`: with [rl_cube_walks()], the moves
+#'   drawn in R, one graph launch per move and the states through R. `"auto"`
+#'   (the default) picks `"resident"` when training on the GPU. The two obey
+#'   the same rules and follow `set.seed()`, but draw different walks (the
+#'   device has its own generator).
+#' @param no_cancel Walks refuse cancelling moves, see [rl_cube_walks()].
 #' @return An [rl_algo()]. The model from [rl_train()] has class
 #'   `rl_cube_q`; see [rl_cube_q_values()] and [rl_cube_q_eval()].
 #'   [rl_save_model()], [rl_load_model()] and the checkpoints of [rl_train()]
@@ -77,8 +88,11 @@ cube_q_build <- function(meta) cube_q_net(meta$obs_dim, meta$n_actions, meta$hid
 #' }
 rl_cube_q <- function(n_moves = 20L, k_min = 2L, hidden = c(1024L, 512L), blocks = 2L,
                       lr = 1e-3, lr_min = 1e-5, warmup = 500L, updates = 20000L,
-                      sched = c("cosine", "const"), max_grad_norm = NULL) {
+                      sched = c("cosine", "const"), max_grad_norm = NULL,
+                      walks = c("auto", "host", "resident"), no_cancel = FALSE) {
   sched <- match.arg(sched)
+  walks <- match.arg(walks)
+  no_cancel <- isTRUE(no_cancel)
   n_moves <- as.integer(n_moves); k_min <- as.integer(k_min)
   hidden <- as.integer(hidden); blocks <- as.integer(blocks)
   if (k_min < 1L || k_min > n_moves - 1L) stop("need 1 <= k_min <= n_moves - 1")
@@ -108,8 +122,19 @@ rl_cube_q <- function(n_moves = 20L, k_min = 2L, hidden = c(1024L, 512L), blocks
   }
 
   collect <- function(state, env) {
-    w <- rl_cube_walks(env, n_moves = n_moves, k_min = k_min)
+    resident <- walks == "resident" || walks == "auto" && identical(state$device, "gpu")
     B <- env$n
+    if (resident) {
+      # R/resident_cube.R: walks and labels are made and stay on the device
+      if (is.null(state$res))
+        state$res <- cube_res_new(env$st, n_moves, state$device, k_min, no_cancel)
+      cube_res_sample(state$res)
+      state$batch <- list(all = state$res$all, cols = state$res$cols,
+                          c_prev = matrix((-1 - y_mu) / y_sd, 1L, B),
+                          c_next = matrix((1 - y_mu) / y_sd, 1L, B))
+      return(list(state = state, steps = B, info = NULL))
+    }
+    w <- rl_cube_walks(env, n_moves = n_moves, k_min = k_min, no_cancel = no_cancel)
     M <- state$meta$n_actions
     y <- mask <- matrix(0, M, B)
     ip <- cbind(w$prev + 1L, seq_len(B))
@@ -129,11 +154,18 @@ rl_cube_q <- function(n_moves = 20L, k_min = 2L, hidden = c(1024L, 512L), blocks
       net <- state$net
       M <- state$meta$n_actions
       # mean over the M x B grid, rescaled to the mean over the 2 B labels
-      fn <- function(x, y, mask) {
+      loss <- function(x, y, mask) {
         d <- ag_mul(ag_sub(net$forward(x)$q, y), mask)
         list(loss = ag_scale(ag_mean(ag_mul(d, d)), M / 2))
       }
-      state$step <- ag_capture_step(fn, optimizer = state$opt, max_grad_norm = max_grad_norm)
+      res <- state$res
+      # resident walks: observations and labels are read from the walk's buffers
+      fn <- if (is.null(res)) loss else function(all, cols, c_prev, c_next) {
+        lb <- cube_res_labels(res, cols, c_prev, c_next, 1 / y_sd)
+        loss(cube_res_obs(res, all), lb$y, lb$mask)
+      }
+      state$step <- ag_capture_step(fn, params = if (!is.null(res)) cube_res_params(res),
+                                    optimizer = state$opt, max_grad_norm = max_grad_norm)
     }
     out <- do.call(state$step, state$batch)
     state$updates <- u
@@ -173,7 +205,8 @@ rl_cube_q <- function(n_moves = 20L, k_min = 2L, hidden = c(1024L, 512L), blocks
           params = list(n_moves = n_moves, k_min = k_min, hidden = hidden,
                         blocks = blocks, lr = lr, lr_min = lr_min, warmup = warmup,
                         updates = updates, sched = sched,
-                        max_grad_norm = max_grad_norm))
+                        max_grad_norm = max_grad_norm, walks = walks,
+                        no_cancel = no_cancel))
 }
 
 #' Move values of a cube Q-model

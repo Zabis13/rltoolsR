@@ -14,7 +14,9 @@ rl_cube_q(
   warmup = 500L,
   updates = 20000L,
   sched = c("cosine", "const"),
-  max_grad_norm = NULL
+  max_grad_norm = NULL,
+  walks = c("auto", "host", "resident"),
+  no_cancel = FALSE
 )
 }
 \arguments{
@@ -29,6 +31,19 @@ rl_cube_q(
 is the length of the cosine, normally `total_steps / env$n`.}
 
 \item{max_grad_norm}{Optional gradient clipping.}
+
+\item{walks}{Where the walks are made. `"resident"`: on the training
+device -- the moves are drawn and made in one recorded graph, all steps
+of a walk queued in one go, and the training step reads the end states
+and the labels there; per iteration only a noise key crosses the bus.
+The walks then live in the algorithm's own device buffers and the games
+of `env` are left alone. `"host"`: with [rl_cube_walks()], the moves
+drawn in R, one graph launch per move and the states through R. `"auto"`
+(the default) picks `"resident"` when training on the GPU. The two obey
+the same rules and follow `set.seed()`, but draw different walks (the
+device has its own generator).}
+
+\item{no_cancel}{Walks refuse cancelling moves, see [rl_cube_walks()].}
 }
 \value{
 An [rl_algo()]. The model from [rl_train()] has class

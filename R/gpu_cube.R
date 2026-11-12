@@ -396,6 +396,15 @@ rl_cube_walks <- function(env, n_moves = 20L, k_min = 2L, no_cancel = FALSE) {
   if (k_min < 1L || k_min > n_moves - 1L)
     stop("need 1 <= k_min <= n_moves - 1")
   st <- env$st
+  p <- cube_walk_plan(st, n_moves, k_min, no_cancel)
+  obs <- cube_device_walk(st, p$acts)
+  st$steps_done <- integer(st$n)
+  list(obs = t(obs), prev = p$prev, `next` = p$`next`, depth = p$depth)
+}
+
+# The host part of rl_cube_walks(): cut depths, the moves of every walk
+# (n x max(cut), identity past the cut) and the labels.
+cube_walk_plan <- function(st, n_moves, k_min, no_cancel = FALSE) {
   n <- st$n
   span <- n_moves - k_min
   cut <- pmin(k_min + as.integer(floor(stats::runif(n) * span)), n_moves - 1L)
@@ -405,7 +414,5 @@ rl_cube_walks <- function(env, n_moves = 20L, k_min = 2L, no_cancel = FALSE) {
   nxt <- acts[cbind(seq_len(n), cut + 1L)]
   acts <- acts[, seq_len(max(cut)), drop = FALSE]
   acts[col(acts) > cut] <- st$M                         # identity past the cut
-  obs <- cube_device_walk(st, acts)
-  st$steps_done <- integer(n)
-  list(obs = t(obs), prev = bitwXor(last, 1L), `next` = nxt, depth = cut)
+  list(acts = acts, prev = bitwXor(last, 1L), `next` = nxt, depth = cut)
 }
