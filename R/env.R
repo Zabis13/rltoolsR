@@ -34,8 +34,11 @@ rl_env_names <- function() {
 #'
 #' @param env An `rl_env`, `rl_vec_env` or `rl_gpu_env`.
 #' @param seed Optional seed; `NULL` continues the current RNG stream.
-#'   For `rl_vec_env`, copy `i` uses `seed + i - 1`. Ignored by
-#'   `rl_gpu_env` (its random opponent uses R's RNG).
+#'   For `rl_vec_env`, copy `i` uses `seed + i - 1`. An `rl_gpu_env` draws
+#'   its random starts, scrambles and opponent moves from R's global stream
+#'   until it is reset with a seed; from then on from its own stream seeded
+#'   with `seed`, so the same seed gives the same trajectory and the caller's
+#'   RNG stream is not touched.
 #' @return Numeric observation vector (`rl_env`) or `n x obs_dim` matrix
 #'   (`rl_vec_env`, `rl_gpu_env`).
 #' @export
@@ -64,18 +67,40 @@ rl_reset.rl_vec_env <- function(env, seed = NULL) {
 #' the first observation of the new episode and `final_obs` the last
 #' observation of the finished one (use it to bootstrap on truncation).
 #'
+#' A single `rl_env` does not reset itself: a step after the episode ended is
+#' an error until [rl_reset()] (or [rl_load_state()]).
+#'
+#' @section Differences from Gymnasium:
+#' \itemize{
+#'   \item [rl_reset()] returns the observation only, not `(obs, info)`.
+#'   \item Extra per-step values (`legal`, `player`, `active`, `end`) are
+#'     fields of the result, not entries of an `info` dict; a single
+#'     `rl_env` returns an empty `info = list()` in their place.
+#'   \item `terminated` and `truncated` are never both `TRUE`: `truncated` is
+#'     set only when the step limit is reached and the episode did not end
+#'     by itself. Bootstrap from `final_obs` only when `truncated` (and not
+#'     `terminated`); keep this rule when wrapping outside environments.
+#'   \item Vectorized environments auto-reset in the same step (Gymnasium's
+#'     `SAME_STEP` mode, not its default `NEXT_STEP`). `final_obs` is always
+#'     present: rows of the copies that ended in this step (`terminated |
+#'     truncated`, the mask) hold their last observation, the other rows are
+#'     `NA`.
+#'   \item Observations come back as R doubles. GPU paths hold them as f32
+#'     on the device; integer states (toy_text) are exact there.
+#' }
+#'
 #' @param env An `rl_env`, `rl_vec_env` or `rl_gpu_env`.
 #' @param action For `rl_env`, numeric vector matching `env$action_space`.
 #'   For `rl_vec_env`, `n x act_dim` matrix (or length-`n` vector when
 #'   `act_dim` is 1). For `rl_gpu_env`, a length-`n` vector of discrete
 #'   actions: cell indices `0..8` (tic-tac-toe), move indices
 #'   `0..length(env$move_names) - 1` (cube) or `0` / `1` (cartpole).
-#' @return List with `obs`, `reward`, `terminated` and `truncated`;
-#'   `rl_vec_env` adds `final_obs`. `rl_gpu_env` adds, by environment:
-#'   tic-tac-toe `legal` (legal-action mask for the next move) and `player`
-#'   (side to move); cube `legal` (all moves) and `final_obs` when a game
-#'   was truncated; cartpole `final_obs` when a game ended. Vectorized fields
-#'   have one row or element per copy.
+#' @return List with `obs`, `reward`, `terminated` and `truncated`; a single
+#'   `rl_env` adds `info` (an empty list). Vectorized environments
+#'   (`rl_vec_env`, `rl_gpu_env`, `rl_mame_env`) add `final_obs` (see the
+#'   section below). `rl_gpu_env` adds, by environment: tic-tac-toe `legal`
+#'   (legal-action mask for the next move) and `player` (side to move); cube
+#'   `legal` (all moves). Vectorized fields have one row or element per copy.
 #' @export
 #' @examples
 #' env <- rl_env("pendulum", seed = 1)
@@ -202,4 +227,14 @@ print.rl_env <- function(x, ...) {
 
 check_env <- function(env) {
   if (!inherits(env, "rl_env")) stop("`env` must be an rl_env object")
+}
+
+# Transition table of a tabular (toy_text) environment: list(prob, next,
+# reward, terminated, isd); the first four are S x A x K arrays, next 0-based.
+# Environments with an observation table (blackjack) add obs [S, obs_dim].
+rl_env_table <- function(env) {
+  check_env(env)
+  tab <- .Call(rlt_env_table, env$ptr)
+  if (is.null(tab$obs)) tab$obs <- NULL
+  tab
 }

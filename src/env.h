@@ -51,14 +51,20 @@ public:
     // Negative seed keeps the current RNG stream.
     std::vector<float> reset(int64_t seed) {
         step_count_ = 0;
+        ended_ = false;
         return do_reset(seed);
     }
 
+    // A step after the episode ended (terminated or truncated) is an error
+    // until reset() or load_state(). truncated is set only when the episode
+    // did not terminate by itself: the two are never both true.
     StepResult step(const std::vector<double>& actions) {
+        if (ended_) throw std::runtime_error(spec().name + ": the episode has ended, call rl_reset()");
         StepResult r = do_step(actions);
         step_count_++;
         int limit = spec().max_steps;
         r.truncated = !r.terminated && limit > 0 && step_count_ >= limit;
+        ended_ = r.terminated || r.truncated;
         return r;
     }
 
@@ -81,6 +87,7 @@ public:
         if (state.size() < sizeof(step_count_)) throw std::runtime_error("state snapshot is too short");
         std::memcpy(&step_count_, state.data(), sizeof(step_count_));
         do_load_state(std::vector<uint8_t>(state.begin() + sizeof(step_count_), state.end()));
+        ended_ = false;   // a loaded state is played from, as after reset()
     }
 
     int step_count() const { return step_count_; }
@@ -92,6 +99,7 @@ protected:
     virtual void do_load_state(const std::vector<uint8_t>& payload) = 0;
 
     int step_count_ = 0;
+    bool ended_ = false;
 };
 
 // Returns nullptr for an unknown name.

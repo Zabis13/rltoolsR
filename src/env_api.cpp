@@ -5,6 +5,7 @@
 #include <string>
 
 #include "env.h"
+#include "env_tabular.h"
 
 #define R_NO_REMAP
 #include <R.h>
@@ -13,23 +14,39 @@
 namespace rltr {
 
 Env* make_pendulum(int64_t seed);
+Env* make_pendulum_gym(int64_t seed);
+Env* make_pendulum_gym_raw(int64_t seed);
 Env* make_cartpole(int64_t seed);
+Env* make_mountain_car(int64_t seed);
+Env* make_mountain_car_continuous(int64_t seed);
 Env* make_acrobot(int64_t seed);
 Env* make_acrobot_swingup(int64_t seed);
 Env* make_car(int64_t seed);
 Env* make_car_track(int64_t seed);
+Env* make_toy_text(const std::string& name, int64_t seed);
+Env* make_box2d(const std::string& name, int64_t seed);
 
 Env* make_env(const std::string& name, int64_t seed) {
     if (name == "pendulum") return make_pendulum(seed);
+    if (name == "pendulum_gym") return make_pendulum_gym(seed);
+    if (name == "pendulum_gym_raw") return make_pendulum_gym_raw(seed);
     if (name == "cartpole") return make_cartpole(seed);
+    if (name == "mountain_car") return make_mountain_car(seed);
+    if (name == "mountain_car_continuous") return make_mountain_car_continuous(seed);
     if (name == "acrobot") return make_acrobot(seed);
     if (name == "acrobot_swingup") return make_acrobot_swingup(seed);
     if (name == "car") return make_car(seed);
     if (name == "car_track") return make_car_track(seed);
-    return nullptr;
+    if (Env* e = make_box2d(name, seed)) return e;
+    return make_toy_text(name, seed);
 }
 
-const char* const ENV_NAMES[] = {"pendulum", "cartpole", "acrobot", "acrobot_swingup", "car", "car_track"};
+const char* const ENV_NAMES[] = {"pendulum", "pendulum_gym", "pendulum_gym_raw", "cartpole", "mountain_car", "mountain_car_continuous", "acrobot", "acrobot_swingup", "car", "car_track",
+    "frozen_lake", "frozen_lake_onehot", "frozen_lake_det", "frozen_lake_det_onehot",
+    "frozen_lake_8x8", "frozen_lake_8x8_onehot", "frozen_lake_8x8_det", "frozen_lake_8x8_det_onehot",
+    "cliff_walking", "cliff_walking_onehot", "taxi", "taxi_onehot",
+    "blackjack", "blackjack_onehot",
+    "lunar_lander", "lunar_lander_continuous"};
 const int N_ENV_NAMES = sizeof(ENV_NAMES) / sizeof(ENV_NAMES[0]);
 
 }  // namespace rltr
@@ -201,6 +218,58 @@ extern "C" SEXP rlt_env_spec(SEXP ptr) {
     return spec_to_r(get_env(ptr)->spec());
 }
 
+// Transition table of a tabular environment: list(prob, next, reward,
+// terminated, isd, obs); the first four are S x A x K arrays, next is
+// 0-based; obs is the S x obs_dim observation table or NULL.
+extern "C" SEXP rlt_env_table(SEXP ptr) {
+    const rltr::TabularEnv* env = dynamic_cast<const rltr::TabularEnv*>(get_env(ptr));
+    if (env == nullptr) Rf_error("not a tabular environment");
+    const rltr::TabularTable& t = env->table();
+    const int S = t.S, A = t.A, K = t.K;
+    const char* nms[] = {"prob", "next", "reward", "terminated", "isd", "obs"};
+    SEXP out = PROTECT(named_list(nms, 6));
+    SEXP prob = PROTECT(Rf_allocVector(REALSXP, static_cast<R_xlen_t>(S) * A * K));
+    SEXP next = PROTECT(Rf_allocVector(INTSXP, XLENGTH(prob)));
+    SEXP rew = PROTECT(Rf_allocVector(REALSXP, XLENGTH(prob)));
+    SEXP term = PROTECT(Rf_allocVector(LGLSXP, XLENGTH(prob)));
+    SEXP isd = PROTECT(Rf_allocVector(REALSXP, S));
+    for (int s = 0; s < S; s++) {
+        REAL(isd)[s] = t.isd[s];
+        for (int a = 0; a < A; a++) {
+            for (int k = 0; k < K; k++) {
+                const rltr::Outcome& o = t.at(s, a, k);
+                const R_xlen_t i = s + static_cast<R_xlen_t>(S) * (a + static_cast<R_xlen_t>(A) * k);
+                REAL(prob)[i] = o.prob;
+                INTEGER(next)[i] = o.next;
+                REAL(rew)[i] = o.reward;
+                LOGICAL(term)[i] = o.terminated;
+            }
+        }
+    }
+    SEXP dim = PROTECT(Rf_allocVector(INTSXP, 3));
+    INTEGER(dim)[0] = S; INTEGER(dim)[1] = A; INTEGER(dim)[2] = K;
+    Rf_setAttrib(prob, R_DimSymbol, dim);
+    Rf_setAttrib(next, R_DimSymbol, dim);
+    Rf_setAttrib(rew, R_DimSymbol, dim);
+    Rf_setAttrib(term, R_DimSymbol, dim);
+    SET_VECTOR_ELT(out, 0, prob);
+    SET_VECTOR_ELT(out, 1, next);
+    SET_VECTOR_ELT(out, 2, rew);
+    SET_VECTOR_ELT(out, 3, term);
+    SET_VECTOR_ELT(out, 4, isd);
+    if (t.obs_dim > 0) {
+        const int D = t.obs_dim;
+        SEXP obs = PROTECT(Rf_allocMatrix(REALSXP, S, D));
+        for (int s = 0; s < S; s++)
+            for (int j = 0; j < D; j++)
+                REAL(obs)[s + static_cast<R_xlen_t>(S) * j] = t.obs[static_cast<size_t>(s) * D + j];
+        SET_VECTOR_ELT(out, 5, obs);
+        UNPROTECT(1);
+    }
+    UNPROTECT(7);
+    return out;
+}
+
 static SEXP spec_to_r(const rltr::EnvSpec& sp) {
     const char* nms[] = {"name", "mode", "n_players", "max_steps", "observation_space", "action_space"};
     SEXP out = PROTECT(named_list(nms, 6));
@@ -239,12 +308,14 @@ extern "C" SEXP rlt_env_step(SEXP ptr, SEXP action) {
         terminated = r.terminated;
         truncated = r.truncated;
     RLTR_CATCH
-    const char* nms[] = {"obs", "reward", "terminated", "truncated"};
-    SEXP out = PROTECT(named_list(nms, 4));
+    // info: an empty list, the place of Gymnasium's info dict
+    const char* nms[] = {"obs", "reward", "terminated", "truncated", "info"};
+    SEXP out = PROTECT(named_list(nms, 5));
     SET_VECTOR_ELT(out, 0, obs);
     SET_VECTOR_ELT(out, 1, Rf_ScalarReal(reward));
     SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(terminated));
     SET_VECTOR_ELT(out, 3, Rf_ScalarLogical(truncated));
+    SET_VECTOR_ELT(out, 4, Rf_allocVector(VECSXP, 0));
     UNPROTECT(3);
     return out;
 }
@@ -388,6 +459,12 @@ extern "C" SEXP rlt_vec_step(SEXP ptr, SEXP action) {
     RLTR_TRY
         v->step(REAL(a), REAL(obs), REAL(reward), LOGICAL(term), LOGICAL(trunc), REAL(final_obs));
     RLTR_CATCH
+    // final_obs: the last observation of the copies that ended in this step,
+    // NA for the others
+    for (int i = 0; i < n; i++) {
+        if (LOGICAL(term)[i] || LOGICAL(trunc)[i]) continue;
+        for (int j = 0; j < v->obs_dim(); j++) REAL(final_obs)[i + static_cast<R_xlen_t>(n) * j] = NA_REAL;
+    }
     UNPROTECT(2);
     return out;
 }

@@ -11,7 +11,7 @@ test_that("rl_vec1 wraps a single env with batched shapes", {
   expect_length(r$reward, 1L)
   expect_false(r$terminated)
   expect_false(r$truncated)
-  expect_equal(r$obs, r$final_obs)
+  expect_true(all(is.na(r$final_obs)))     # NA while the episode goes on
   expect_null(rl_legal_actions(venv))
 })
 

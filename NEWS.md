@@ -1,3 +1,18 @@
+# rltoolsR 0.1.5
+
+* New Gymnasium classic_control environments `mountain_car`, `mountain_car_continuous`, `pendulum_gym`, `pendulum_gym_raw`, in `rl_env()` and `rl_gpu_env()`.
+* Bundled Box2D v3 physics (Erin Catto, MIT) and new `lunar_lander`, `lunar_lander_continuous` environments.
+* Resident PPO rollout (`rl_ppo(rollout = "resident")`) also for the toy_text environments, with the truncation bootstrap computed on the device.
+* Resident PPO rollout for `rl_gpu_env("cartpole", device = "gpu")`: physics, termination, truncation and resets on the device.
+* Resident PPO rollout for `rl_gpu_env("pendulum_gym" / "pendulum_gym_raw", device = "gpu")` with box actions (Gaussian policy).
+* GPU `cube` keeps its state as a 3-d tensor, without reshapes in the step graph.
+
+# rltoolsR 0.1.4
+
+* New `rl_mame_env("mk3", n)` — Mortal Kombat 3 (Genesis) in n MAME processes, one round per episode, against the CPU or two-player; `rl_close()` stops the processes.
+* Mortal Kombat 3 (Genesis) under MAME, examples: `mame_fifo_probe` (FIFO lockstep), `mame_ram_search` (RAM address search), `mame_check_hold` (block, run, deterministic reset).
+* RAM map of Mortal Kombat 3 (Genesis) in the README.
+
 # rltoolsR 0.1.3
 
 * PPO picks actions on the device: forward, legal-action mask, action choice, its log-probability and the value are one graph launch during collection and in `rl_act()`; the logits are no longer downloaded.

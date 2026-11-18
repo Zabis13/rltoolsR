@@ -1,0 +1,114 @@
+# The bundled Box2D v3 (src/box2d) builds, links and simulates: a box dropped
+# from 10 m comes to rest on the ground at y = 0.5 (its half height).
+test_that("bundled Box2D builds and simulates a falling box", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[1:2], c(3, 2))
+  expect_equal(r[4], 0.5, tolerance = 0.02)
+})
+
+# ---- LunarLander (src/env_box2d.cpp, from gymnasium/envs/box2d/lunar_lander.py)
+
+# Gymnasium's heuristic() from lunar_lander.py, in R
+ll_heuristic <- function(s, continuous) {
+  angle_targ <- min(max(s[1] * 0.5 + s[3] * 1.0, -0.4), 0.4)
+  hover_targ <- 0.55 * abs(s[1])
+  angle_todo <- (angle_targ - s[5]) * 0.5 - s[6] * 1.0
+  hover_todo <- (hover_targ - s[2]) * 0.5 - s[4] * 0.5
+  if (s[7] > 0 || s[8] > 0) {
+    angle_todo <- 0
+    hover_todo <- -s[4] * 0.5
+  }
+  if (continuous) return(pmin(pmax(c(hover_todo * 20 - 1, -angle_todo * 20), -1), 1))
+  if (hover_todo > abs(angle_todo) && hover_todo > 0.05) 2
+  else if (angle_todo < -0.05) 3
+  else if (angle_todo > 0.05) 1
+  else 0
+}
+
+ll_episode <- function(name, seed, policy) {
+  env <- rl_env(name, seed = seed)
+  s <- rl_reset(env, seed = seed)
+  total <- 0
+  for (t in seq_len(env$max_steps)) {
+    r <- rl_step(env, policy(s))
+    total <- total + r$reward
+    s <- r$obs
+    if (r$terminated || r$truncated) break
+  }
+  list(total = total, last = r, steps = t)
+}
+
+test_that("lunar_lander spec", {
+  env <- rl_env("lunar_lander", seed = 1)
+  expect_equal(env$max_steps, 1000L)
+  expect_equal(env$observation_space$shape, 8L)
+  expect_equal(env$action_space$n, 4L)
+  envc <- rl_env("lunar_lander_continuous", seed = 1)
+  expect_equal(envc$action_space$shape, 2L)
+  o <- rl_reset(env, seed = 3)
+  expect_length(o, 8)
+  expect_equal(o[7:8], c(0, 0))                      # legs up in the air
+  expect_lt(abs(o[1]), 0.1)                          # starts above the middle
+  expect_error(rl_step(env, 4), "integer in 0..3")
+  expect_error(rl_step(envc, c(0, NaN)), "NaN")
+})
+
+for (nm in c("lunar_lander", "lunar_lander_continuous")) {
+  continuous <- nm == "lunar_lander_continuous"
+
+  # The heuristic itself crashes now and then (in Gymnasium too), so no landing
+  # is required of every seed: the mean return over 20 seeds, with a margin
+  # (lunar_lander measured 244.7 on seeds 1-20, 240.8 on 1001-1200).
+  test_that(paste(nm, "Gymnasium's heuristic: mean return above 220 over 20 seeds"), {
+    ret <- vapply(1:20, function(seed) {
+      ll_episode(nm, seed, function(s) ll_heuristic(s, continuous))$total
+    }, 0)
+    expect_gt(mean(ret), 220)
+  })
+
+  test_that(paste(nm, "free fall crashes with -100"), {
+    noop <- if (continuous) function(s) c(-1, 0) else function(s) 0
+    e <- ll_episode(nm, 1, noop)
+    expect_true(e$last$terminated)
+    expect_equal(e$last$reward, -100)
+  })
+
+  test_that(paste(nm, "same seed and actions, same trajectory; save / load"), {
+    pol <- function(s) ll_heuristic(s, continuous)
+    expect_equal(ll_episode(nm, 4, pol), ll_episode(nm, 4, pol))
+    env <- rl_env(nm, seed = 5)
+    s <- rl_reset(env, seed = 5)
+    for (t in 1:30) s <- rl_step(env, pol(s))$obs
+    snap <- rl_save_state(env)
+    # engines off: their dispersion comes from the RNG, which a snapshot does
+    # not hold; without them the restored world must step exactly the same
+    a <- if (continuous) c(-1, 0) else 0
+    r1 <- lapply(1:5, function(t) rl_step(env, a))
+    rl_load_state(env, snap)
+    r2 <- lapply(1:5, function(t) rl_step(env, a))
+    expect_identical(r1, r2)
+  })
+
+  test_that(paste(nm, "vec env matches single envs"), {
+    venv <- rl_vec_env(nm, n = 3, seed = 1)
+    singles <- lapply(0:2, function(i) rl_env(nm, seed = 1 + i))
+    o <- rl_reset(venv, seed = 1)
+    expect_equal(o, do.call(rbind, lapply(1:3, function(i) rl_reset(singles[[i]], seed = i))))
+    a <- if (continuous) matrix(c(0.5, 0, -0.5, 0.8, -0.8, 0), 3, 2) else c(0, 2, 3)
+    vec <- sgl <- list()
+    for (t in 1:20) {
+      r <- rl_step(venv, a)
+      done <- r$terminated | r$truncated
+      r$obs[done, ] <- r$final_obs[done, ]          # the singles keep the last obs
+      vec[[t]] <- r[c("obs", "reward", "terminated", "truncated")]
+      ri <- lapply(1:3, function(i) rl_step(singles[[i]], if (continuous) a[i, ] else a[i]))
+      sgl[[t]] <- list(obs = do.call(rbind, lapply(ri, `[[`, "obs")),
+                       reward = vapply(ri, `[[`, 0, "reward"),
+                       terminated = vapply(ri, `[[`, NA, "terminated"),
+                       truncated = vapply(ri, `[[`, NA, "truncated"))
+      if (any(r$terminated | r$truncated)) break      # singles do not auto-reset
+    }
+    for (f in c("obs", "reward", "terminated", "truncated"))
+      expect_equal(lapply(vec, `[[`, f), lapply(sgl, `[[`, f), label = f)
+  })
+}

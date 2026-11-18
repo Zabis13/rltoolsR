@@ -1,1 +1,27 @@
 CXX_STD = CXX17
+
+# Box2D v3 (src/box2d, MIT, Erin Catto): scalar math (no SIMD, portable),
+# assertions kept on and turned into R errors (src/box2d/src/core.c).
+PKG_CPPFLAGS = -Ibox2d/include
+PKG_CFLAGS = -DBOX2D_DISABLE_SIMD -DB2_ENABLE_ASSERT
+# timer.c holds Box2D's thread helpers (unused: every world runs serially)
+PKG_LIBS = -pthread
+
+# R compiles only the top-level sources by itself: list every object.
+# A new .cpp in src/ must be added here (and in Makevars.win).
+BOX2D_OBJECTS = box2d/src/aabb.o box2d/src/arena_allocator.o box2d/src/bitset.o \
+  box2d/src/body.o box2d/src/broad_phase.o box2d/src/chain_builder.o \
+  box2d/src/constraint_graph.o box2d/src/contact.o box2d/src/contact_solver.o \
+  box2d/src/contact_solver_w4.o box2d/src/contact_solver_w8.o box2d/src/core.o \
+  box2d/src/distance.o box2d/src/distance_joint.o box2d/src/dynamic_tree.o \
+  box2d/src/geometry.o box2d/src/hull.o box2d/src/id_pool.o box2d/src/island.o \
+  box2d/src/joint.o box2d/src/manifold.o box2d/src/math_functions.o \
+  box2d/src/motor_joint.o box2d/src/mover.o box2d/src/mover_joint.o \
+  box2d/src/parallel_for.o box2d/src/physics_world.o box2d/src/pogo_joint.o \
+  box2d/src/prismatic_joint.o box2d/src/recording.o box2d/src/replay.o \
+  box2d/src/revolute_joint.o box2d/src/scheduler.o box2d/src/sensor.o \
+  box2d/src/shape.o box2d/src/simd.o box2d/src/snapshot.o box2d/src/solver.o \
+  box2d/src/solver_set.o box2d/src/table.o box2d/src/timer.o box2d/src/types.o \
+  box2d/src/weld_joint.o box2d/src/wheel_joint.o
+
+OBJECTS = cube_walk.o env_api.o env_box2d.o env_control.o env_toy_text.o init.o $(BOX2D_OBJECTS)

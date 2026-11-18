@@ -30,10 +30,12 @@ rl_reset.rl_vec1 <- function(env, seed = NULL) {
 #' @export
 rl_step.rl_vec1 <- function(env, action) {
   r <- rl_step(env$env, as.numeric(action))
-  final_obs <- matrix(r$obs, 1L)
-  obs <- if (r$terminated || r$truncated) matrix(rl_reset(env$env), 1L) else final_obs
+  last <- matrix(r$obs, 1L)
+  done <- r$terminated || r$truncated
+  obs <- if (done) matrix(rl_reset(env$env), 1L) else last
+  # final_obs: the last observation when the episode ended, NA otherwise
   list(obs = obs, reward = r$reward, terminated = r$terminated,
-       truncated = r$truncated, final_obs = final_obs)
+       truncated = r$truncated, final_obs = if (done) last else last * NA_real_)
 }
 
 #' @export

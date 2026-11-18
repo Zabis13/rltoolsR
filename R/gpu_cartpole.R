@@ -93,7 +93,8 @@ cartpole_set_state <- function(env, state) {
 
 #' @export
 rl_reset.rl_gpu_cartpole <- function(env, seed = NULL) {
-  obs <- cartpole_initial(env$n)
+  if (!is.null(seed)) gpu_rng_seed(env$st, seed)
+  obs <- gpu_rng(env$st, function() cartpole_initial(env$n))
   cartpole_set_state(env, obs)
   obs
 }
@@ -113,12 +114,13 @@ rl_step.rl_gpu_cartpole <- function(env, action) {
   terminated <- abs(obs[, 1]) > k$x_threshold | abs(obs[, 3]) > k$theta_threshold
   st$steps_done <- st$steps_done + 1L
   truncated <- !terminated & st$steps_done >= k$max_steps
+  # final_obs: the last observation of the games that ended, NA for the others
   res <- list(obs = obs, reward = rep(1, st$n), terminated = terminated,
-              truncated = truncated)
+              truncated = truncated, final_obs = obs * NA_real_)
   done <- which(terminated | truncated)
   if (length(done)) {
-    res$final_obs <- obs
-    obs[done, ] <- cartpole_initial(length(done))
+    res$final_obs[done, ] <- obs[done, ]
+    obs[done, ] <- gpu_rng(st, function() cartpole_initial(length(done)))
     ggml_backend_tensor_set_data(st$state[[st$cur]], as.numeric(obs))
     st$steps_done[done] <- 0L
     res$obs <- obs

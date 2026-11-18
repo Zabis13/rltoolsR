@@ -166,7 +166,8 @@ for (i in seq_len(iters)) algo$collect(state, env)
 pr <- rltoolsR:::rl_prof_get()
 rltoolsR:::rl_prof(FALSE)
 stage_us <- 1000 * pr$ms / iters
-r <- rltoolsR:::ppo_res_rollout(cap, n_env, n_steps)
+ad <- rltoolsR:::ppo_res_adapter_ttt()
+r <- rltoolsR:::ppo_res_rollout(cap, ad, n_env, n_steps)
 gae_us <- per_call(function() rltoolsR:::ppo_gae(r$rew, r$val, r$done, r$last_val,
                                                  0.99, 0.95, -1))
 cat("3. collect stages (rl_prof), us per collection\n")
@@ -198,7 +199,7 @@ seq_us <- function(fresh) {
 }
 seq_fixed <- seq_us(FALSE)
 seq_fresh <- seq_us(TRUE)
-whole_us <- per_call(function() rltoolsR:::ppo_res_rollout(cap, n_env, n_steps), k = 5L)
+whole_us <- per_call(function() rltoolsR:::ppo_res_rollout(cap, ad, n_env, n_steps), k = 5L)
 cat("4. rollout in its real order, us per part (median); alone = the table above\n")
 print(round(rbind(
   alone = c(us[["cnt_reset"]], us[["repeat_9"]] - us[["cnt_reset"]], us[["bootstrap"]],
@@ -238,7 +239,7 @@ n_free <- 0L
 suppressMessages(trace(".ag_capture_vk_rec_free", where = asNamespace("ggmlR"), print = FALSE,
                        tracer = quote(assign("n_free", get("n_free", globalenv()) + 1L,
                                              globalenv()))))
-for (i in 1:20) rltoolsR:::ppo_res_rollout(cap, n_env, n_steps)
+for (i in 1:20) rltoolsR:::ppo_res_rollout(cap, ad, n_env, n_steps)
 suppressMessages(untrace(".ag_capture_vk_rec_free", where = asNamespace("ggmlR")))
 cat(sprintf("   recordings thrown away (stale) over 20 rollouts: %d\n", n_free))
 

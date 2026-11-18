@@ -22,8 +22,9 @@ Useful links:
 Other contributors:
 \itemize{
   \item Jonas Eschmann (Author of the 'RLtools' library; pendulum, acrobot and car environments in src/env_control.cpp are ported from it) [contributor, copyright holder]
-  \item OpenAI ('Gym'/'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R) [copyright holder]
-  \item Farama Foundation ('Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R) [copyright holder]
+  \item OpenAI ('Gym'/'Gymnasium' acrobot, CartPole, MountainCar, Pendulum, FrozenLake, CliffWalking, Taxi and Blackjack environments ported in src/env_control.cpp, src/env_toy_text.cpp, R/gpu_cartpole.R, R/gpu_mountain_car.R and R/gpu_pendulum.R) [copyright holder]
+  \item Farama Foundation ('Gymnasium' acrobot, CartPole, MountainCar, Pendulum, FrozenLake, CliffWalking, Taxi and Blackjack environments ported in src/env_control.cpp, src/env_toy_text.cpp, R/gpu_cartpole.R, R/gpu_mountain_car.R and R/gpu_pendulum.R) [copyright holder]
+  \item Erin Catto (Author of the 'Box2D' physics library, bundled in src/box2d) [contributor, copyright holder]
   \item Christoph Dann (Author of the RLPy acrobot environment) [contributor, copyright holder]
   \item Alborz Geramifard (RLPy acrobot environment) [contributor, copyright holder]
   \item Robert H. Klein (RLPy acrobot environment) [contributor, copyright holder]

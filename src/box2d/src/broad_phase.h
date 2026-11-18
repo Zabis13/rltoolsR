@@ -1,0 +1,64 @@
+// SPDX-FileCopyrightText: 2023 Erin Catto
+// SPDX-License-Identifier: MIT
+
+#pragma once
+
+#include "dynamic_tree.h"
+#include "table.h"
+
+#include "box2d/collision.h"
+#include "box2d/types.h"
+
+typedef struct b2Shape b2Shape;
+typedef struct b2Stack b2Stack;
+typedef struct b2World b2World;
+
+// Store the proxy type in the lower 2 bits of the proxy key. This leaves 30 bits for the id.
+#define B2_PROXY_TYPE( KEY ) ( (b2BodyType)( ( KEY ) & 3 ) )
+#define B2_PROXY_ID( KEY ) ( ( KEY ) >> 2 )
+#define B2_PROXY_KEY( ID, TYPE ) ( ( ( ID ) << 2 ) | ( TYPE ) )
+
+/// The broad-phase is used for computing pairs and performing volume queries and ray casts.
+/// This broad-phase does not persist pairs. Instead, this reports potentially new pairs.
+/// It is up to the client to consume the new pairs and to track subsequent overlap.
+typedef struct b2BroadPhase
+{
+	// One tree for each body type.
+	b2DynamicTree trees[b2_bodyTypeCount];
+
+	// The moved siblings gathered from the dynamic body tree.
+	int* movedSiblings;
+
+	// Tracks shape pairs that have a b2Contact
+	b2HashSet pairSet;
+} b2BroadPhase;
+
+void b2CreateBroadPhase( b2BroadPhase* bp, const b2Capacity* capacity );
+void b2DestroyBroadPhase( b2BroadPhase* bp );
+
+int b2BroadPhase_CreateProxy( b2BroadPhase* bp, b2BodyType proxyType, b2AABB aabb, uint64_t categoryBits, int shapeIndex,
+							  bool forcePairCreation );
+void b2BroadPhase_DestroyProxy( b2BroadPhase* bp, int proxyKey );
+
+void b2BroadPhase_MoveProxy( b2BroadPhase* bp, int proxyKey, b2AABB aabb );
+
+void b2UpdateBroadPhasePairs( b2World* world );
+
+void b2RadixSortKeys( uint64_t* keys, uint64_t* tempKeys, int count );
+
+void b2ValidateBroadphase( const b2BroadPhase* bp );
+void b2ValidateNoEnlarged( const b2BroadPhase* bp );
+
+static inline void b2BroadPhase_MarkProxyMovedSerial( b2BroadPhase* bp, int proxyKey )
+{
+	b2BodyType proxyType = B2_PROXY_TYPE( proxyKey );
+	int proxyId = B2_PROXY_ID( proxyKey );
+	b2DynamicTree_MarkProxyMovedSerial( bp->trees + proxyType, proxyId );
+}
+
+static inline void b2BroadPhase_MarkProxyMoved( b2BroadPhase* bp, int proxyKey, b2AABB aabb )
+{
+	b2BodyType proxyType = B2_PROXY_TYPE( proxyKey );
+	int proxyId = B2_PROXY_ID( proxyKey );
+	b2DynamicTree_MarkProxyMoved( bp->trees + proxyType, proxyId, aabb );
+}

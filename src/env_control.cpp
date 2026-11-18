@@ -1,4 +1,4 @@
-// Control environments: pendulum, cartpole, acrobot, car.
+// Control environments: pendulum, cartpole, mountain car, acrobot, car.
 // Ported from RLtools (https://github.com/rl-tools/rl-tools,
 // include/rl_tools/rl/environments/{pendulum,acrobot,car}); the acrobot dynamics
 // follow Gymnasium v0.28.1 classic_control/acrobot.py. Physics in float, RNG is
@@ -134,6 +134,59 @@ struct Pendulum {
     }
 };
 
+// Gymnasium Pendulum-v1 (classic_control/pendulum.py), float64 physics.
+// RAW = true: the action is the torque in [-2, 2], clipped to it, as in
+// Gymnasium. RAW = false: scaled action in [-1, 1], clipped, times 2. In both
+// the torque cost uses the clipped torque. Initial theta uniform in [-pi, pi],
+// theta_dot in [-1, 1]; 200 steps, never terminates.
+template <bool RAW>
+struct PendulumGym {
+    using D = double;
+    static constexpr int OBS_DIM = 3, ACTION_DIM = 1, STEP_LIMIT = 200;
+    static constexpr D g = 10, max_speed = 8, max_torque = 2, dt = 0.05, m = 1, l = 1;
+    static constexpr D pi = 3.14159265358979323846;
+
+    struct State { D theta, theta_dot; };
+
+    static D clampd(D x, D lo, D hi) { return x < lo ? lo : (x > hi ? hi : x); }
+
+    // ((x + pi) mod 2 pi) - pi with Python's floored modulo
+    static D angle_normalize(D x) {
+        D a = x + pi, b = 2 * pi;
+        return a - b * std::floor(a / b) - pi;
+    }
+
+    static D torque(const T* a) {
+        return RAW ? clampd(a[0], -max_torque, max_torque) : max_torque * clampd(a[0], -1, 1);
+    }
+
+    void sample_initial_state(State& s, RNG& rng) const {
+        s.theta = uniform<D>(-pi, pi, rng);
+        s.theta_dot = uniform<D>(-1, 1, rng);
+    }
+
+    void step(const State& s, const T* a, State& next) const {
+        const D u = torque(a);
+        D thdot = s.theta_dot + (3 * g / (2 * l) * std::sin(s.theta) + 3 / (m * l * l) * u) * dt;
+        thdot = clampd(thdot, -max_speed, max_speed);
+        next.theta = s.theta + thdot * dt;
+        next.theta_dot = thdot;
+    }
+
+    T reward(const State& s, const T* a, const State&) const {
+        const D th = angle_normalize(s.theta), u = torque(a);
+        return static_cast<T>(-(th * th + 0.1 * s.theta_dot * s.theta_dot + 0.001 * u * u));
+    }
+
+    bool terminated(const State&) const { return false; }
+
+    void observe(const State& s, float* o) const {
+        o[0] = static_cast<float>(std::cos(s.theta));
+        o[1] = static_cast<float>(std::sin(s.theta));
+        o[2] = static_cast<float>(s.theta_dot);
+    }
+};
+
 // ---------------------------------------------------------------- cartpole
 
 // Gymnasium CartPole-v1 (classic_control/cartpole.py): Euler integration,
@@ -185,6 +238,60 @@ struct CartPole {
         o[1] = static_cast<float>(s.x_dot);
         o[2] = static_cast<float>(s.theta);
         o[3] = static_cast<float>(s.theta_dot);
+    }
+};
+
+// ------------------------------------------------------------- mountain car
+
+// Gymnasium MountainCar-v0 (CONTINUOUS = false) and MountainCarContinuous-v0
+// (classic_control/mountain_car.py, continuous_mountain_car.py), float64
+// physics. Discrete: actions 0 / 1 / 2 (push left / none / right), reward -1
+// per step, goal x >= 0.5, 200 steps. Continuous: force clip(a, -1, 1),
+// reward -0.1 a^2 on the unclipped action plus 100 at the goal x >= 0.45,
+// 999 steps. Initial x uniform in [-0.6, -0.4], velocity 0.
+template <bool CONTINUOUS>
+struct MountainCar {
+    using D = double;
+    static constexpr int OBS_DIM = 2, ACTION_DIM = 1, STEP_LIMIT = CONTINUOUS ? 999 : 200;
+    static constexpr D min_position = -1.2, max_position = 0.6, max_speed = 0.07;
+    static constexpr D goal_position = CONTINUOUS ? 0.45 : 0.5;
+    static constexpr D force = 0.001, power = 0.0015, gravity = 0.0025;
+
+    struct State { D x, v; };
+
+    void sample_initial_state(State& s, RNG& rng) const {
+        s.x = uniform<D>(-0.6, -0.4, rng);
+        s.v = 0;
+    }
+
+    void step(const State& s, const T* a, State& next) const {
+        D f;
+        if (CONTINUOUS) {
+            f = clampf(a[0], -1, 1) * power;
+        } else {
+            if (a[0] != 0 && a[0] != 1 && a[0] != 2)
+                throw std::invalid_argument("mountain_car: action must be 0, 1 or 2");
+            f = (a[0] - 1) * force;
+        }
+        D v = s.v + f - gravity * std::cos(3 * s.x);
+        v = v < -max_speed ? -max_speed : (v > max_speed ? max_speed : v);
+        D x = s.x + v;
+        x = x < min_position ? min_position : (x > max_position ? max_position : x);
+        if (x == min_position && v < 0) v = 0;
+        next.x = x;
+        next.v = v;
+    }
+
+    T reward(const State&, const T* a, const State& next) const {
+        if (!CONTINUOUS) return -1;
+        return (terminated(next) ? T(100) : T(0)) - T(0.1) * a[0] * a[0];
+    }
+
+    bool terminated(const State& s) const { return s.x >= goal_position && s.v >= 0; }
+
+    void observe(const State& s, float* o) const {
+        o[0] = static_cast<float>(s.x);
+        o[1] = static_cast<float>(s.v);
     }
 };
 
@@ -425,12 +532,41 @@ Env* make_pendulum(int64_t seed) {
         box({-1}, {1})));
 }
 
+template <bool RAW>
+Env* make_pendulum_gym_impl(const std::string& name, int64_t seed) {
+    using M = PendulumGym<RAW>;
+    const double a = RAW ? M::max_torque : 1;
+    return new ControlEnv<M>(seed, make_spec(
+        name, M::STEP_LIMIT,
+        box({-1, -1, -M::max_speed}, {1, 1, M::max_speed}),
+        box({-a}, {a})));
+}
+
+Env* make_pendulum_gym(int64_t seed) { return make_pendulum_gym_impl<false>("pendulum_gym", seed); }
+
+Env* make_pendulum_gym_raw(int64_t seed) { return make_pendulum_gym_impl<true>("pendulum_gym_raw", seed); }
+
 Env* make_cartpole(int64_t seed) {
     const double t2 = 2 * CartPole::theta_threshold, x2 = 2 * CartPole::x_threshold;
     return new ControlEnv<CartPole>(seed, make_spec(
         "cartpole", CartPole::STEP_LIMIT,
         box({-x2, -INF, -t2, -INF}, {x2, INF, t2, INF}),
         discrete(2)));
+}
+
+template <bool CONTINUOUS>
+Env* make_mountain_car_impl(const std::string& name, int64_t seed) {
+    using M = MountainCar<CONTINUOUS>;
+    return new ControlEnv<M>(seed, make_spec(
+        name, M::STEP_LIMIT,
+        box({M::min_position, -M::max_speed}, {M::max_position, M::max_speed}),
+        CONTINUOUS ? box({-1}, {1}) : discrete(3)));
+}
+
+Env* make_mountain_car(int64_t seed) { return make_mountain_car_impl<false>("mountain_car", seed); }
+
+Env* make_mountain_car_continuous(int64_t seed) {
+    return make_mountain_car_impl<true>("mountain_car_continuous", seed);
 }
 
 Env* make_acrobot(int64_t seed) { return make_acrobot_impl<false>("acrobot", seed); }

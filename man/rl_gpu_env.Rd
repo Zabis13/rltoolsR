@@ -15,7 +15,9 @@ rl_gpu_env(
 )
 }
 \arguments{
-\item{name}{Environment name: `"tictactoe"`, `"cube"` or `"cartpole"`.}
+\item{name}{Environment name: `"tictactoe"`, `"cube"`, `"cartpole"`,
+`"mountain_car"`, `"mountain_car_continuous"`, `"pendulum_gym"` or
+`"pendulum_gym_raw"`.}
 
 \item{n}{Number of parallel games.}
 
@@ -24,7 +26,8 @@ rl_gpu_env(
 to move alternates and `reward` is for the side that just moved.
 `"random"`: the caller always plays X and a uniformly random legal
 opponent answers inside the same graph; `reward` is for X. Its moves
-use R's RNG, so `set.seed()` makes them reproducible.}
+use R's RNG, so `set.seed()` makes them reproducible, or the
+environment's own stream after `rl_reset(env, seed = )`.}
 
 \item{device}{`"cpu"` (the default), `"auto"` (GPU if a Vulkan device is
   available, else CPU) or `"gpu"`. CPU is the default even when the policy
@@ -38,17 +41,19 @@ use R's RNG, so `set.seed()` makes them reproducible.}
   Observations are returned where the environment keeps them. With
   `device = "gpu"`, tic-tac-toe and cube return `obs` from [rl_reset()] and
   [rl_step()] as an [rl_device_obs] (call `as.matrix()` for the host
-  matrix), and the cube's `final_obs` holds only the truncated games' rows
-  (the others are `NA`); cartpole computes `terminated` and its resets in R from the
-  state, so it returns a matrix on every device. With `device = "cpu"`
+  matrix); `final_obs` is always a host matrix (rows of the games that
+  ended, `NA` for the others, see [rl_step()]). Cartpole, mountain car and
+  pendulum compute
+  `terminated` and their resets in R from the state, so they return a matrix
+  on every device. With `device = "cpu"`
   every environment returns a matrix.}
 
 \item{size, scramble, max_steps}{Cube only: edge length, scramble depth of
 reset games and the step limit.}
 }
 \value{
-An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole`
-  first for those environments).
+An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole` /
+  `rl_gpu_mountain_car` / `rl_gpu_pendulum` first for those environments).
 }
 \description{
 Runs `n` copies of an environment as a ggml compute graph on the GPU
@@ -71,6 +76,15 @@ See [rl_cube_walks()] for labelled training data.
 `"cartpole"`: CartPole-v1, the physics of `rl_env("cartpole")` in f32 on the
 device; actions 0 (left) / 1 (right), reward 1 per step, `truncated` after
 500 steps, auto-reset with `final_obs`. Initial states use R's RNG.
+
+`"mountain_car"`, `"mountain_car_continuous"`: MountainCar-v0 and
+MountainCarContinuous-v0, the physics of the `rl_env()` versions in f32 on
+the device; rewards, `truncated` (200 / 999 steps) and auto-reset with
+`final_obs` as in `rl_env()`. Initial states use R's RNG.
+
+`"pendulum_gym"`, `"pendulum_gym_raw"`: Pendulum-v1, the physics of the
+`rl_env()` versions in f32 on the device; reward computed in R, `truncated`
+after 200 steps, auto-reset with `final_obs`. Initial states use R's RNG.
 }
 \examples{
 \donttest{

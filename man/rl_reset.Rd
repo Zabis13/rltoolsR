@@ -10,8 +10,11 @@ rl_reset(env, seed = NULL)
 \item{env}{An `rl_env`, `rl_vec_env` or `rl_gpu_env`.}
 
 \item{seed}{Optional seed; `NULL` continues the current RNG stream.
-For `rl_vec_env`, copy `i` uses `seed + i - 1`. Ignored by
-`rl_gpu_env` (its random opponent uses R's RNG).}
+For `rl_vec_env`, copy `i` uses `seed + i - 1`. An `rl_gpu_env` draws
+its random starts, scrambles and opponent moves from R's global stream
+until it is reset with a seed; from then on from its own stream seeded
+with `seed`, so the same seed gives the same trajectory and the caller's
+RNG stream is not touched.}
 }
 \value{
 Numeric observation vector (`rl_env`) or `n x obs_dim` matrix

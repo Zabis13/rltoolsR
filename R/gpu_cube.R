@@ -126,34 +126,61 @@ cube_move_algebra <- function(perms) {
 # cayleyR's no_cancel instead: walking back over the tail while it commutes
 # with the candidate, meeting its inverse bans it, and so does meeting the
 # candidate itself so often that one more would be shorter the other way.
+# The work is in C (src/cube_walk.cpp); cube_walk_actions_r() below is the R
+# reference it is tested against (same rule, another random stream).
 cube_walk_actions <- function(k, depth, n_moves, alg = NULL) {
+  cube_walk_c(NULL, k, depth, n_moves, alg, colors = FALSE)$acts
+}
+
+# k scrambles of `depth` moves from solved: the walks (k x depth) and the
+# colours they lead to (k x S), in one call to C.
+cube_scramble <- function(perms, k, depth, n_moves, alg = NULL) {
+  cube_walk_c(perms, k, depth, n_moves, alg, colors = TRUE)
+}
+
+cube_walk_c <- function(perms, k, depth, n_moves, alg, colors) {
+  if (colors) storage.mode(perms) <- "integer"
+  r <- .Call(rlt_cube_walk, perms, as.integer(k), as.integer(depth),
+             as.integer(n_moves),
+             if (!is.null(alg)) alg$commute[seq_len(n_moves), seq_len(n_moves)],
+             if (!is.null(alg)) as.integer(alg$order[seq_len(n_moves)]),
+             colors)
+  list(acts = r[[1L]], col = r[[2L]])
+}
+
+# Which moves each walk may take next, given its moves so far (k x (t - 1),
+# 0-based): a k x n_moves logical matrix. The rule of cube_walk_actions().
+cube_allowed_r <- function(prev, n_moves, alg = NULL) {
+  k <- nrow(prev); t1 <- ncol(prev)
+  allowed <- matrix(TRUE, k, n_moves)
+  if (t1 < 1L) return(allowed)
+  if (is.null(alg)) {
+    allowed[cbind(seq_len(k), bitwXor(prev[, t1], 1L) + 1L)] <- FALSE
+    return(allowed)
+  }
+  inv_c <- matrix(bitwXor(seq_len(n_moves) - 1L, 1L), k, n_moves, byrow = TRUE)
+  cand <- matrix(seq_len(n_moves) - 1L, k, n_moves, byrow = TRUE)
+  active <- matrix(TRUE, k, n_moves)
+  ban <- matrix(FALSE, k, n_moves)
+  cnt <- matrix(0L, k, n_moves)
+  for (j in t1:1) {
+    b <- prev[, j]
+    hit <- active & (b == inv_c)
+    ban <- ban | hit
+    active <- active & !hit
+    active <- active & t(alg$commute[seq_len(n_moves), b + 1L, drop = FALSE])
+    cnt <- cnt + (active & (b == cand))
+    if (!any(active)) break
+  }
+  ord <- matrix(alg$order[seq_len(n_moves)], k, n_moves, byrow = TRUE)
+  !(ban | (ord > 0L & 2L * (cnt + 1L) > ord))
+}
+
+cube_walk_actions_r <- function(k, depth, n_moves, alg = NULL) {
   a <- matrix(0L, k, depth)
   if (depth < 1L || k < 1L) return(a)
   for (t in seq_len(depth)) {
-    allowed <- matrix(TRUE, k, n_moves)
-    if (t > 1L) {
-      if (is.null(alg)) {
-        allowed[cbind(seq_len(k), bitwXor(a[, t - 1L], 1L) + 1L)] <- FALSE
-      } else {
-        inv_c <- matrix(bitwXor(seq_len(n_moves) - 1L, 1L), k, n_moves, byrow = TRUE)
-        cand <- matrix(seq_len(n_moves) - 1L, k, n_moves, byrow = TRUE)
-        active <- matrix(TRUE, k, n_moves)
-        ban <- matrix(FALSE, k, n_moves)
-        cnt <- matrix(0L, k, n_moves)
-        for (j in (t - 1L):1) {
-          b <- a[, j]
-          hit <- active & (b == inv_c)
-          ban <- ban | hit
-          active <- active & !hit
-          active <- active & t(alg$commute[, b + 1L, drop = FALSE])
-          cnt <- cnt + (active & (b == cand))
-          if (!any(active)) break
-        }
-        ord <- matrix(alg$order, k, n_moves, byrow = TRUE)
-        ban <- ban | (ord > 0L & 2L * (cnt + 1L) > ord)
-        allowed <- !ban
-      }
-    }
+    allowed <- cube_allowed_r(a[, seq_len(t - 1L), drop = FALSE], n_moves, alg)
     if (any(rowSums(allowed) == 0L)) stop("no move left to take at step ", t)
     # uniform over the allowed moves of each walk
     u <- matrix(stats::runif(k * n_moves), k, n_moves)
@@ -163,8 +190,15 @@ cube_walk_actions <- function(k, depth, n_moves, alg = NULL) {
   a
 }
 
-# colours (k x S, 0..5) after applying the moves in `acts` (k x d) to solved
+# colours (k x S, 0..5) after applying the moves in `acts` (k x d) to solved;
+# in C, cube_host_scramble_r() is the R reference
 cube_host_scramble <- function(perms, acts) {
+  storage.mode(perms) <- "integer"
+  storage.mode(acts) <- "integer"
+  .Call(rlt_cube_apply, perms, acts)
+}
+
+cube_host_scramble_r <- function(perms, acts) {
   S <- ncol(perms)
   k <- nrow(acts)
   col <- matrix((seq_len(S) - 1L) %/% (S %/% 6L), k, S, byrow = TRUE)
@@ -210,9 +244,8 @@ cube_gpu_env <- function(n, size, scramble, max_steps, device) {
 
   st$ctx_state <- ggml_init(4 * 1024 * 1024, no_alloc = TRUE)
   cs <- st$ctx_state
-  # 2-d [S*6, n] (one column per game, as ag_buffer_copy_from() takes it);
-  # the step graph views it as [S, 6, n]
-  st$state  <- lapply(1:2, function(i) ggml_new_tensor_2d(cs, GGML_TYPE_F32, S * 6L, n))
+  # 3-d [S, 6, n]: one column of S*6 per game, as ag_buffer_copy_from() takes it
+  st$state  <- lapply(1:2, function(i) ggml_new_tensor_3d(cs, GGML_TYPE_F32, S, 6L, n))
   st$P      <- ggml_new_tensor_2d(cs, GGML_TYPE_F32, S * S, M + 1L)
   st$action <- ggml_new_tensor_1d(cs, GGML_TYPE_I32, n)
   st$buffer <- ggml_backend_alloc_ctx_tensors(cs, st$backend)
@@ -241,13 +274,13 @@ cube_build_step <- function(st, src, dst) {
   g <- st$ctx_graph
   S <- st$S; n <- st$n; f <- S %/% 6L
   p <- ggml_reshape_3d(g, ggml_get_rows(g, st$P, st$action), S, S, n)
-  x <- ggml_mul_mat(g, p, ggml_reshape_3d(g, st$state[[src]], S, 6, n))   # [S, 6, n]
+  x <- ggml_mul_mat(g, p, st$state[[src]])   # [S, 6, n]
   # stickers of each colour per face: [1, 6 faces, 6 colours, n]
   cnt <- ggml_sum_rows(g, ggml_reshape_4d(g, x, f, 6, 6, n))
   full <- ttt_ind(g, ggml_scale_bias(g, cnt, 1, -(f - 1)))     # 1 where count == f
   faces <- ggml_sum_rows(g, ggml_reshape_2d(g, full, 36, n))  # [1, n]
   solved <- ttt_ind(g, ggml_scale_bias(g, faces, 1, -5))
-  out <- list(obs = ggml_reshape_2d(g, x, S * 6L, n), solved = solved)
+  out <- list(obs = x, solved = solved)
   for (t in out) ggml_set_output(t)
 
   graph <- ggml_build_forward_expand(g, out$obs)
@@ -279,7 +312,7 @@ cube_device_walk <- function(st, acts, download = TRUE) {
   if (download) matrix(ggml_backend_tensor_get_data(out$obs), st$S * 6L, st$n)
 }
 
-# the current state [S*6, n] as the device observation; it also
+# the current state [S, 6, n] as the device observation; it also
 # holds the resets written on the host, unlike the step graph's output
 cube_device_obs <- function(st) {
   new_rl_device_obs(st$state[[st$cur]], st$backend, st$n, st$S * 6L)
@@ -288,7 +321,8 @@ cube_device_obs <- function(st) {
 #' @export
 rl_reset.rl_gpu_cube <- function(env, seed = NULL) {
   st <- env$st
-  acts <- cube_walk_actions(st$n, st$scramble, st$M)
+  if (!is.null(seed)) gpu_rng_seed(st, seed)
+  acts <- gpu_rng(st, function() cube_walk_actions(st$n, st$scramble, st$M))
   st$steps_done <- integer(st$n)
   if (env$device == "gpu") {
     cube_device_walk(st, acts, download = FALSE)
@@ -312,25 +346,36 @@ rl_step.rl_gpu_cube <- function(env, action) {
   terminated <- ggml_backend_tensor_get_data(out$solved) > 0.5
   st$steps_done <- st$steps_done + 1L
   truncated <- !terminated & st$steps_done >= st$max_steps
-  final_obs <- NULL
+  # final_obs: the last observation of the games that ended (solved or
+  # truncated), NA for the others
+  final_obs <- matrix(NA_real_, st$n, per)
   done <- which(terminated | truncated)
   if (length(done)) {
-    if (any(truncated)) {
-      if (dev) {
-        # only the truncated games' columns come down; the other rows are NA
-        final_obs <- matrix(NA_real_, st$n, per)
-        for (k in which(truncated)) {
-          final_obs[k, ] <- ggml_backend_tensor_get_data(
-            out$obs, offset = as.double(k - 1L) * per * 4, n_elements = per)
-        }
-      } else {
-        final_obs <- t(obs)
+    # Each transfer synchronises with the device (~0.07 ms), so column by
+    # column costs ~35 ms when all 256 games are truncated together (they are
+    # scrambled together). Past `bulk` finished games the whole matrices go
+    # in one download and one upload instead.
+    bulk <- dev && length(done) >= getOption("rltoolsR.cube_bulk_min", 8L)
+    if (bulk) {
+      fin <- matrix(ggml_backend_tensor_get_data(out$obs), per, st$n)
+      final_obs[done, ] <- t(fin[, done, drop = FALSE])
+    } else if (dev) {
+      # only the finished games' columns come down
+      for (k in done) {
+        final_obs[k, ] <- ggml_backend_tensor_get_data(
+          out$obs, offset = as.double(k - 1L) * per * 4, n_elements = per)
       }
+    } else {
+      final_obs[done, ] <- t(obs[, done, drop = FALSE])
     }
     # new scrambles for the finished games, written in place on the device
-    col <- cube_host_scramble(st$perms, cube_walk_actions(length(done), st$scramble, st$M))
+    col <- gpu_rng(st, function() cube_scramble(st$perms, length(done), st$scramble, st$M))$col
     oh <- cube_onehot(col)
-    for (k in seq_along(done)) {
+    if (bulk) {
+      cur <- matrix(ggml_backend_tensor_get_data(st$state[[st$cur]]), per, st$n)
+      cur[, done] <- oh
+      ggml_backend_tensor_set_data(st$state[[st$cur]], as.numeric(cur))
+    } else for (k in seq_along(done)) {
       ggml_backend_tensor_set_data(st$state[[st$cur]], oh[, k],
                                    offset = as.double(done[k] - 1L) * per * 4)
     }
@@ -339,8 +384,7 @@ rl_step.rl_gpu_cube <- function(env, action) {
   }
   res <- list(obs = if (dev) cube_device_obs(st) else t(obs), reward = as.numeric(terminated),
               terminated = terminated, truncated = truncated,
-              legal = matrix(TRUE, st$n, st$M))
-  if (!is.null(final_obs)) res$final_obs <- final_obs
+              legal = matrix(TRUE, st$n, st$M), final_obs = final_obs)
   res
 }
 

@@ -66,14 +66,26 @@ ttt_full <- function(ctx, board) {
 #' device; actions 0 (left) / 1 (right), reward 1 per step, `truncated` after
 #' 500 steps, auto-reset with `final_obs`. Initial states use R's RNG.
 #'
-#' @param name Environment name: `"tictactoe"`, `"cube"` or `"cartpole"`.
+#' `"mountain_car"`, `"mountain_car_continuous"`: MountainCar-v0 and
+#' MountainCarContinuous-v0, the physics of the `rl_env()` versions in f32 on
+#' the device; rewards, `truncated` (200 / 999 steps) and auto-reset with
+#' `final_obs` as in `rl_env()`. Initial states use R's RNG.
+#'
+#' `"pendulum_gym"`, `"pendulum_gym_raw"`: Pendulum-v1, the physics of the
+#' `rl_env()` versions in f32 on the device; reward computed in R, `truncated`
+#' after 200 steps, auto-reset with `final_obs`. Initial states use R's RNG.
+#'
+#' @param name Environment name: `"tictactoe"`, `"cube"`, `"cartpole"`,
+#'   `"mountain_car"`, `"mountain_car_continuous"`, `"pendulum_gym"` or
+#'   `"pendulum_gym_raw"`.
 #' @param n Number of parallel games.
 #' @param opponent Tic-tac-toe only (ignored otherwise).
 #'   `"self"`: both sides are played by the caller, the side
 #'   to move alternates and `reward` is for the side that just moved.
 #'   `"random"`: the caller always plays X and a uniformly random legal
 #'   opponent answers inside the same graph; `reward` is for X. Its moves
-#'   use R's RNG, so `set.seed()` makes them reproducible.
+#'   use R's RNG, so `set.seed()` makes them reproducible, or the
+#'   environment's own stream after `rl_reset(env, seed = )`.
 #' @param device `"cpu"` (the default), `"auto"` (GPU if a Vulkan device is
 #'   available, else CPU) or `"gpu"`. CPU is the default even when the policy
 #'   trains on the GPU: observations go through R to the network anyway, and a
@@ -86,14 +98,16 @@ ttt_full <- function(ctx, board) {
 #'   Observations are returned where the environment keeps them. With
 #'   `device = "gpu"`, tic-tac-toe and cube return `obs` from [rl_reset()] and
 #'   [rl_step()] as an [rl_device_obs] (call `as.matrix()` for the host
-#'   matrix), and the cube's `final_obs` holds only the truncated games' rows
-#'   (the others are `NA`); cartpole computes `terminated` and its resets in R from the
-#'   state, so it returns a matrix on every device. With `device = "cpu"`
+#'   matrix); `final_obs` is always a host matrix (rows of the games that
+#'   ended, `NA` for the others, see [rl_step()]). Cartpole, mountain car and
+#'   pendulum compute
+#'   `terminated` and their resets in R from the state, so they return a matrix
+#'   on every device. With `device = "cpu"`
 #'   every environment returns a matrix.
 #' @param size,scramble,max_steps Cube only: edge length, scramble depth of
 #'   reset games and the step limit.
-#' @return An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole`
-#'   first for those environments).
+#' @return An object of class `rl_gpu_env` (`rl_gpu_cube` / `rl_gpu_cartpole` /
+#'   `rl_gpu_mountain_car` / `rl_gpu_pendulum` first for those environments).
 #' @export
 #' @examples
 #' \donttest{
@@ -112,13 +126,19 @@ ttt_full <- function(ctx, board) {
 rl_gpu_env <- function(name, n, opponent = c("self", "random"),
                        device = c("cpu", "auto", "gpu"),
                        size = 3L, scramble = 20L, max_steps = 50L) {
-  name <- match.arg(name, c("tictactoe", "cube", "cartpole"))
+  name <- match.arg(name, c("tictactoe", "cube", "cartpole",
+                            "mountain_car", "mountain_car_continuous",
+                            "pendulum_gym", "pendulum_gym_raw"))
   opponent <- match.arg(opponent)
   device <- rl_resolve_device(match.arg(device))
   n <- as.integer(n)
   stopifnot(length(n) == 1, !is.na(n), n >= 1)
   if (name == "cube") return(cube_gpu_env(n, size, scramble, max_steps, device))
   if (name == "cartpole") return(cartpole_gpu_env(n, device))
+  if (name %in% c("mountain_car", "mountain_car_continuous"))
+    return(mountain_car_gpu_env(n, device, continuous = name == "mountain_car_continuous"))
+  if (name %in% c("pendulum_gym", "pendulum_gym_raw"))
+    return(pendulum_gpu_env(n, device, raw = name == "pendulum_gym_raw"))
 
   st <- new.env(parent = emptyenv())
   st$n <- n
@@ -180,9 +200,11 @@ ttt_build_step <- function(st, src, dst) {
     done <- ttt_ind(g, ggml_add(g, ggml_add(g, done, m2$win), ttt_full(g, board)))
     reward <- ggml_sub(g, reward, m2$win)
     next_player <- ones
+    final_player <- ones
   } else {
     not_done <- ggml_scale_bias(g, done, -1, 1)
     next_player <- ggml_add(g, ggml_mul(g, ggml_neg(g, player), not_done), done)
+    final_player <- ggml_neg(g, player)
   }
 
   next_board <- ggml_mul(g, board, ggml_scale_bias(g, done, -1, 1))
@@ -191,7 +213,9 @@ ttt_build_step <- function(st, src, dst) {
     legal = ggml_scale_bias(g, ggml_sqr(g, next_board), -1, 1),
     reward = reward,
     done = done,
-    player = next_player
+    player = next_player,
+    # the canonical observation of the board before the reset (final_obs)
+    final = ggml_mul(g, board, final_player)
   )
   for (t in out) ggml_set_output(t)
 
@@ -218,6 +242,8 @@ ttt_free <- function(st) {
 #' @export
 rl_reset.rl_gpu_env <- function(env, seed = NULL) {
   st <- env$st
+  # the stream of the random opponent's moves
+  if (!is.null(seed)) gpu_rng_seed(st, seed)
   ggml_backend_tensor_set_data(st$board[[st$cur]], numeric(9 * st$n))
   ggml_backend_tensor_set_data(st$player[[st$cur]], rep(1, st$n))
   # empty boards with X to move: the observation is the board itself
@@ -233,21 +259,30 @@ rl_step.rl_gpu_env <- function(env, action) {
   if (anyNA(action) || any(action < 0L | action > 8L)) stop("actions must be cell indices 0..8")
   ggml_backend_tensor_set_data(st$action, action)
   if (st$opponent == "random") {
-    ggml_backend_tensor_set_data(st$noise, stats::runif(9 * st$n))
+    ggml_backend_tensor_set_data(st$noise, gpu_rng(st, function() stats::runif(9 * st$n)))
   }
   step <- st$steps[[st$cur]]
   ggml_backend_sched_graph_compute(step$sched, step$graph)
   st$cur <- 3L - st$cur
   out <- step$out
+  terminated <- ggml_backend_tensor_get_data(out$done) > 0.5
+  # final_obs: the last observation of the games that ended, NA for the others;
+  # downloaded only when a game ended
+  final_obs <- matrix(NA_real_, st$n, 9)
+  if (any(terminated)) {
+    fin <- t(matrix(ggml_backend_tensor_get_data(out$final), 9, st$n))
+    final_obs[terminated, ] <- fin[terminated, ]
+  }
   list(
     # [9, n] output of this step's graph: kept until the graph runs again
     obs = if (env$device == "gpu") new_rl_device_obs(out$obs, st$backend, st$n, 9L) else
       t(matrix(ggml_backend_tensor_get_data(out$obs), 9, st$n)),
     reward = ggml_backend_tensor_get_data(out$reward),
-    terminated = ggml_backend_tensor_get_data(out$done) > 0.5,
+    terminated = terminated,
     truncated = logical(st$n),
     legal = t(matrix(ggml_backend_tensor_get_data(out$legal), 9, st$n) > 0.5),
-    player = as.integer(ggml_backend_tensor_get_data(out$player))
+    player = as.integer(ggml_backend_tensor_get_data(out$player)),
+    final_obs = final_obs
   )
 }
 

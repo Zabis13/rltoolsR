@@ -31,6 +31,21 @@ Choose actions with a trained policy
 Observations are normalized with the statistics frozen in the
   model metadata when the model was trained with `normalize_obs`.
 
+  A model on the CPU acts on plain R matrices (no `ag_*` dispatch) for
+  discrete actions and greedy continuous ones; continuous sampling takes the
+  `ag_*` path. `options(rltoolsR.host_act = FALSE)` turns the host path off.
+
+  CPU or GPU: a call on the GPU costs a fixed ~0.35-0.4 ms (one graph launch
+  and its transfers) that hardly grows with the batch, while the CPU grows
+  with batch and network width. Measured (greedy, 9 inputs, 9 actions;
+  Radeon RX 9070 at a fixed clock, OpenBLAS on one thread;
+  `inst/examples/bench_act_crossover.R`), the GPU is faster from a batch of
+  about 128 with `hidden = 64` (0.067 ms CPU vs 0.42 ms GPU at batch 1) and
+  about 16 with `hidden = 256`. So for one environment, or a few, move a
+  model trained on the GPU to the CPU to act ([rl_save_model()] /
+  [rl_load_model()]); the crossover is a property of the width and the
+  hardware, not a fixed number.
+
   `rl_ppo_act()` is a deprecated alias kept for compatibility.
 }
 \examples{

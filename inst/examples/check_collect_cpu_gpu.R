@@ -15,6 +15,14 @@
 # their largest magnitude, since they scale with the rewards), returns at
 # the truncation steps alone (where the bootstrap enters), and rl_act()
 # (greedy) on the collected observations.
+#
+# Pendulum is chaotic: a float32 rounding difference in the first action
+# (~1e-7) grows roughly exponentially along the episode, to ~1e-2 in obs and
+# ~1e-3 in adv_rel / ret_rel by step 200 (measured 2026-11-17, RX 9070). The
+# whole-rollout columns therefore show the drift, not an error. What tells the
+# two apart is the per-step table printed at the end: at step 1 and right
+# after the reset (step max_steps + 1) obs must be ~1e-7 again. A systematic
+# error (network, bootstrap, reset) would not return to rounding level there.
 # Raw results: /tmp/check_collect_<env>_<device>.rds
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -106,6 +114,20 @@ for (e in names(setups)) {
       idx <- (t_tr - 1L) * n_env + seq_len(n_env)
       row$ret_trunc_rel <- reldiff(a$ret[idx], b$ret[idx])
     }
+    # the drift along the episode and its return to rounding after the reset;
+    # obs and act are [dim, n_env * n_t], step t in columns (t - 1) * n_env + 1..n_env
+    cols <- function(t) (t - 1L) * n_env + seq_len(n_env)
+    steps <- unique(c(1L, 10L, 50L, 100L, t_tr - 1L, t_tr, t_tr + 1L, n_t))
+    steps <- steps[steps >= 1L & steps <= n_t]
+    drift <- data.frame(
+      step = steps,
+      obs = vapply(steps, function(t) maxdiff(a$obs[, cols(t), drop = FALSE],
+                                              b$obs[, cols(t), drop = FALSE]), 0),
+      act = vapply(steps, function(t) maxdiff(a$act[, cols(t), drop = FALSE],
+                                              b$act[, cols(t), drop = FALSE]), 0),
+      adv = vapply(steps, function(t) maxdiff(a$adv[cols(t)], b$adv[cols(t)]), 0))
+    drift$note <- ifelse(drift$step == 1L, "first step",
+                  ifelse(drift$step == t_tr + 1L, "after the reset", ""))
   }
   rows[[e]] <- row
 }
@@ -115,6 +137,12 @@ rownames(out) <- NULL
 cat("\nPPO collect, GPU vs CPU (max |difference|; *_rel divided by the largest",
     "|value|; act_mismatch and discrete rl_act are counts):\n\n")
 print(out, digits = 3)
-cat("\nExpected: act_mismatch 0, discrete rl_act 0; *_rel at float32 rounding",
-    "(~1e-6 and below); obs, logp and continuous rl_act ~1e-5 and below",
-    "(pendulum trajectories drift apart by rounding over an episode).\n")
+cat("\nExpected: act_mismatch 0, discrete rl_act 0, logp and continuous rl_act",
+    "~1e-5 and below. tictactoe: obs 0, *_rel ~1e-6 and below. pendulum: obs up",
+    "to ~1e-2 and *_rel ~1e-3 -- the drift of a chaotic trajectory, see below.\n")
+if (exists("drift")) {
+  cat("\npendulum, GPU vs CPU per step (max |difference|):\n\n")
+  print(drift, digits = 3, row.names = FALSE)
+  cat("\nExpected: obs ~1e-7 at the first step and after the reset, growing in",
+      "between; act ~1e-5 and below at every step.\n")
+}

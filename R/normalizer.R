@@ -22,7 +22,13 @@ running_stats_update <- function(rs, x) {
   n <- ncol(x)
   if (n == 0L) return(rs)
   bm <- rowMeans(x)
-  bv <- rowMeans((x - bm)^2)
+  running_stats_merge(rs, bm, rowMeans((x - bm)^2), n)
+}
+
+# The same update from a batch's mean, (population) variance and size, e.g.
+# the moments computed on the device (R/ppo_resident.R).
+running_stats_merge <- function(rs, bm, bv, n) {
+  if (n == 0) return(rs)
   tot <- rs$count + n
   d <- bm - rs$mean
   rs$mean <- rs$mean + d * n / tot

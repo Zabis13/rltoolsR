@@ -197,6 +197,21 @@ policy_value_buf <- function(net, buf, idx, cache, id) {
 #' @details Observations are normalized with the statistics frozen in the
 #'   model metadata when the model was trained with `normalize_obs`.
 #'
+#'   A model on the CPU acts on plain R matrices (no `ag_*` dispatch) for
+#'   discrete actions and greedy continuous ones; continuous sampling takes the
+#'   `ag_*` path. `options(rltoolsR.host_act = FALSE)` turns the host path off.
+#'
+#'   CPU or GPU: a call on the GPU costs a fixed ~0.35-0.4 ms (one graph launch
+#'   and its transfers) that hardly grows with the batch, while the CPU grows
+#'   with batch and network width. Measured (greedy, 9 inputs, 9 actions;
+#'   Radeon RX 9070 at a fixed clock, OpenBLAS on one thread;
+#'   `inst/examples/bench_act_crossover.R`), the GPU is faster from a batch of
+#'   about 128 with `hidden = 64` (0.067 ms CPU vs 0.42 ms GPU at batch 1) and
+#'   about 16 with `hidden = 256`. So for one environment, or a few, move a
+#'   model trained on the GPU to the CPU to act ([rl_save_model()] /
+#'   [rl_load_model()]); the crossover is a property of the width and the
+#'   hardware, not a fixed number.
+#'
 #'   `rl_ppo_act()` is a deprecated alias kept for compatibility.
 #' @return Discrete actions: integer vector of actions (`0`-based).
 #'   Continuous actions: `n x act_dim` matrix clipped to the action space.
@@ -211,6 +226,8 @@ policy_value_buf <- function(net, buf, idx, cache, id) {
 #' }
 rl_act <- function(model, obs, legal = NULL, greedy = TRUE) {
   obs <- obs_host(obs)
+  a <- policy_act_host(model, obs, legal, greedy)
+  if (!is.null(a)) return(a)
   with_policy_modes(model, {
     meta <- model$meta
     if (identical(meta$action_type, "box")) {
@@ -230,15 +247,90 @@ rl_act <- function(model, obs, legal = NULL, greedy = TRUE) {
   })
 }
 
+# Host path of rl_act() for a model on the CPU device: the forward on plain R
+# matrices, without ag_* dispatch. On the CPU ag_* ops are R arithmetic on
+# double matrices anyway, so the numbers are the same; what goes is the
+# per-op wrapping (~30 us an op, ~0.45 ms a call at batch 1, measured
+# 2026-11-18). Covers discrete actions (greedy and sampled, the sampling noise
+# from ag_rand() with the same key as policy_act()) and greedy box actions;
+# returns NULL for anything else (box sampling, a GPU model, a net it does not
+# know), and rl_act() then takes the ag_* path. options(rltoolsR.host_act =
+# FALSE) turns it off.
+policy_act_host <- function(model, obs, legal, greedy) {
+  if (!identical(model$device, "cpu") || isFALSE(getOption("rltoolsR.host_act", TRUE)))
+    return(NULL)
+  meta <- model$meta
+  box <- identical(meta$action_type, "box")
+  if (box && !greedy) return(NULL)
+  out <- policy_forward_host(model, t(obs))
+  if (is.null(out)) return(NULL)
+  if (box) return(clip_to_space(out$mu, meta$action_space))   # [act_dim, B] in
+  logits <- out$logits
+  if (!is.null(legal)) logits <- logits + PPO_MASK * (1 - t(legal) * 1)
+  if (greedy) return(max.col(t(logits), ties.method = "first") - 1L)
+  # as policy_act_body(): log-softmax, then Gumbel-max with the device's noise
+  key <- stats::runif(2L)
+  mx <- matrix(apply(logits, 2, max), nrow(logits), ncol(logits), byrow = TRUE)
+  z <- logits - mx
+  lp <- z - matrix(log(colSums(exp(z))), nrow(logits), ncol(logits), byrow = TRUE)
+  g <- as.matrix(ag_rand(key, "gumbel", dims = dim(lp), device = "cpu"))
+  m <- lp + g
+  m[is.na(m)] <- -Inf
+  max.col(t(m), ties.method = "first") - 1L
+}
+
+# The forward of a PPO net on host matrices, x [obs_dim, B] -> list of
+# [., B] matrices; NULL when a parameter is not a host matrix or the net is
+# not one of ppo_net / ppo_net_shared / ppo_box_net.
+policy_forward_host <- function(model, x) {
+  p <- lapply(model$net$parameters(), function(t) t$data)
+  if (!all(vapply(p, function(m) is.matrix(m) && is.double(m), NA))) return(NULL)
+  meta <- model$meta
+  if (isTRUE(meta$normalize_obs)) {
+    norm <- meta$obs_norm
+    clip <- norm$clip_obs
+    x <- pmin(pmax((x - as.vector(norm$mean)) * as.vector(obs_scale(norm)), -clip), clip)
+  }
+  lin <- function(w, b, h) p[[w]] %*% h + as.vector(p[[b]])
+  arch <- if (identical(meta$action_type, "box")) "box" else
+    if (identical(meta$net_arch, "separate")) "separate" else "shared"
+  need <- switch(arch,
+                 box = c("a1_W", "a2_W", "mu_W", "c1_W", "c2_W", "v_W", "log_std"),
+                 separate = c("a1_W", "a2_W", "pi_W", "c1_W", "c2_W", "v_W"),
+                 shared = c("l1_W", "l2_W", "pi_W", "v_W"))
+  if (!all(need %in% names(p))) return(NULL)
+  switch(arch,
+    box = list(mu = lin("mu_W", "mu_b", tanh(lin("a2_W", "a2_b", tanh(lin("a1_W", "a1_b", x))))),
+               value = lin("v_W", "v_b", tanh(lin("c2_W", "c2_b", tanh(lin("c1_W", "c1_b", x))))),
+               log_std = p$log_std),
+    separate = list(
+      logits = lin("pi_W", "pi_b", tanh(lin("a2_W", "a2_b", tanh(lin("a1_W", "a1_b", x))))),
+      value = lin("v_W", "v_b", tanh(lin("c2_W", "c2_b", tanh(lin("c1_W", "c1_b", x)))))),
+    shared = {
+      relu <- function(z) pmax(z, 0)
+      h <- relu(lin("l2_W", "l2_b", relu(lin("l1_W", "l1_b", x))))
+      list(logits = lin("pi_W", "pi_b", h), value = tanh(lin("v_W", "v_b", h)))
+    })
+}
+
 # Evaluates `expr` on the model's device in the GPU modes of training (see
 # rl_train): one fused graph for the forward (16 -> 2 launches per call,
 # measured), and f32-tile matmuls so batch 1 and a batch of more than 8
 # observations pick the same action. The caller's device and modes come back
 # on exit.
+#
+# Nothing is switched when the device and the modes are already the ones
+# wanted (the usual case inside rl_train() and in a loop of rl_act() calls):
+# even a switch to the current device cost a backend query per call, and the
+# mode switches a match.arg each -- together ~20% of a GPU rl_act() at batch 1
+# (Rprof, 2026-11-18).
 with_policy_modes <- function(model, expr) {
-  prev <- ag_device(model$device)
-  on.exit(ag_device(prev), add = TRUE)
-  ag_local_mode(graph = TRUE, matmul_precision = "f32")
+  if (!identical(ag_default_device(), model$device)) {
+    prev <- ag_device(model$device)
+    on.exit(ag_device(prev), add = TRUE)
+  }
+  if (!isTRUE(ag_graph_mode()) || !identical(ag_matmul_precision(), "f32"))
+    ag_local_mode(graph = TRUE, matmul_precision = "f32")
   expr
 }
 
@@ -323,11 +415,22 @@ rl_ppo_act <- rl_act
 #' @param rollout Where the collection loop runs. `"resident"`: the policy and
 #'   the environment are one recorded device graph, replayed once per step with
 #'   no data crossing the bus; the rollout comes down once at the end. Needs
-#'   `rl_gpu_env("tictactoe", opponent = "self", device = "gpu")`, a GPU
-#'   network, `capture = TRUE`, no `pool` and no `normalize_obs`; the games
-#'   then live in the collection's own device buffers and `env` itself is not
-#'   stepped. `"host"`: a loop in R, one step of the environment per
-#'   iteration. `"auto"` (the default) picks `"resident"` when possible.
+#'   `rl_gpu_env("tictactoe", opponent = "self", device = "gpu")`,
+#'   `rl_gpu_env("cartpole", device = "gpu")`,
+#'   `rl_gpu_env("pendulum_gym", device = "gpu")` (or `"pendulum_gym_raw"`,
+#'   box actions) or a toy_text
+#'   environment (`rl_vec_env("frozen_lake...")`, `"cliff_walking..."`,
+#'   `"taxi..."`, `"blackjack..."`), a GPU network,
+#'   `capture = TRUE`, and `pool` only with tic-tac-toe (the opponent
+#'   snapshot then runs in the same recording); the games then live in
+#'   the collection's own device buffers and `env` itself is not stepped (it
+#'   gives the specification). Truncated episodes are bootstrapped with the
+#'   value of the final observation, as on the host path. `"host"`: a loop in R, one step of the environment per
+#'   iteration. `"auto"` (the default) picks `"resident"` when possible. The
+#'   C++ cartpole and pendulum (`rl_env("cartpole")`, `rl_vec_env("cartpole")`,
+#'   `"pendulum_gym"`, `"pendulum_gym_raw"`, f64) run
+#'   resident (f32 physics, resets drawn on the device) only with an explicit
+#'   `rollout = "resident"`; `"auto"` keeps it on the host.
 #' @param pool `NULL` (plain self-play, the default), `TRUE` or a list with
 #'   any of `p_self` (0.8), `every` (10) and `size` (20): fictitious self-play
 #'   against a pool of past policies, for two-player self-play environments
@@ -452,6 +555,32 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     state
   }
 
+  # After GAE over the full trajectories: drop the snapshot's moves and the
+  # steps not played (b_keep FALSE), then a random subset of the rest so the
+  # count is a multiple of minibatch (of 64 below it) -- fixed update shapes
+  # for the captured graphs. Host and resident rollouts (cols: buffer columns).
+  rollout_keep <- function(ro, b_keep) {
+    keep <- which(as.logical(b_keep))
+    n_use <- length(keep)
+    n_use <- if (n_use >= minibatch) n_use %/% minibatch * minibatch else
+      max(min(n_use, 64L), n_use %/% 64L * 64L)
+    if (n_use < length(keep)) keep <- sort(keep[sample.int(length(keep), n_use)])
+    if (!is.null(ro$cols)) ro$cols <- ro$cols[keep] else ro$obs <- ro$obs[, keep, drop = FALSE]
+    if (!is.null(ro$legal)) ro$legal <- ro$legal[, keep, drop = FALSE]
+    if (is.matrix(ro$act)) ro$act <- ro$act[, keep, drop = FALSE] else ro$act <- ro$act[keep]
+    ro[c("logp", "adv", "ret")] <- lapply(ro[c("logp", "adv", "ret")], function(v) v[keep])
+    ro
+  }
+
+  # The pool statistics of a rollout (fsp), host and resident.
+  fsp_info <- function(used, pool_games, pool_wins, pool_losses, side_games, side_wins) {
+    c(used = used, pool_games = pool_games,
+      pool_win = if (pool_games > 0) pool_wins / pool_games else NA_real_,
+      pool_loss = if (pool_games > 0) pool_losses / pool_games else NA_real_,
+      pool_win_x = if (side_games[[1]] > 0) side_wins[[1]] / side_games[[1]] else NA_real_,
+      pool_win_o = if (side_games[[2]] > 0) side_wins[[2]] / side_games[[2]] else NA_real_)
+  }
+
   collect <- function(state, env) {
     net <- state$net
     meta <- state$meta
@@ -460,11 +589,17 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     obs_dim <- meta$obs_dim
     turn_sign <- state$turn_sign
     if (is.null(state$obs_path) && rollout != "host") {
-      ok <- ppo_res_ok(env, box, !is.null(pool), capture, meta, state$device)
-      if (ok) state$obs_path <- "resident" else if (rollout == "resident")
+      ad <- ppo_res_adapter(env, box, !is.null(pool), capture, meta, state$device, rollout)
+      if (!is.null(ad)) {
+        state$obs_path <- "resident"
+        state$res_ad <- ad
+      } else if (rollout == "resident") {
         stop("rl_ppo(rollout = \"resident\") needs rl_gpu_env(\"tictactoe\", ",
-             "opponent = \"self\", device = \"gpu\"), a GPU network, capture = TRUE, ",
-             "no pool and no normalize_obs", call. = FALSE)
+             "opponent = \"self\", device = \"gpu\"), rl_gpu_env(\"cartpole\" / \"pendulum_gym...\", ",
+             "device = \"gpu\"), cartpole / pendulum_gym... (rl_env / rl_vec_env) or a toy_text environment ",
+             "(rl_vec_env(\"frozen_lake...\" / \"cliff_walking...\" / \"taxi...\" / \"blackjack...\")), a GPU network, capture = TRUE, ",
+             "and pool only with tic-tac-toe", call. = FALSE)
+      }
     }
     if (identical(state$obs_path, "resident")) return(collect_resident(state, env))
     if (is.null(state[["obs"]])) {
@@ -496,9 +631,12 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       cols0 <- seq_len(n_env) - 1
     }
     fsp <- !is.null(pool)
+    # transitions to train on: not the snapshot's moves (fsp), not the steps
+    # an environment marks as not played (r$active FALSE, e.g. MAME menus)
+    b_keep <- matrix(TRUE, n_env, n_steps)
+    masked <- FALSE
     if (fsp) {
       state <- pool_start(state, n_env)
-      b_keep <- matrix(TRUE, n_env, n_steps)
       pool_games <- 0
       pool_wins <- pool_losses <- 0
       side_games <- side_wins <- c(x = 0, o = 0)   # by the learner's side
@@ -569,6 +707,10 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       tk <- prof_tick(tk, "collect: download")
       b_val[, t] <- v_t
       done <- r$terminated | r$truncated
+      if (!is.null(r$active)) {
+        b_keep[, t] <- b_keep[, t] & r$active
+        masked <- TRUE
+      }
       rew <- r$reward
       if (meta$normalize_reward) {
         state$ret_track <- state$ret_track * gamma + rew
@@ -579,6 +721,9 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       b_rew[, t] <- rew
       trunc <- r$truncated & !r$terminated
       if (any(trunc) && !is.null(r$final_obs)) {
+        # final_obs holds the last observation of every ended copy, NA elsewhere
+        if (anyNA(r$final_obs[trunc, ]))
+          stop("environment returned NA final_obs for a truncated copy", call. = FALSE)
         # padded to n_env columns: one recorded shape instead of one per
         # number of truncated environments
         fin <- matrix(0, obs_dim, n_env)
@@ -626,22 +771,7 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       legal = if (!box) matrix(b_legal, meta$n_actions, N),
       logp = as.numeric(b_logp), adv = as.numeric(adv), ret = as.numeric(ret),
       norm = norm)
-    if (fsp) {
-      # after GAE over the full trajectories: drop the snapshot's moves, then
-      # a random subset of the rest so the count is a multiple of minibatch
-      # (of 64 below it) -- fixed update shapes for the captured graphs
-      keep <- which(as.logical(b_keep))
-      n_use <- length(keep)
-      n_use <- if (n_use >= minibatch) n_use %/% minibatch * minibatch else
-        max(min(n_use, 64L), n_use %/% 64L * 64L)
-      if (n_use < length(keep)) keep <- sort(keep[sample.int(length(keep), n_use)])
-      ro <- state$rollout
-      if (dev) ro$cols <- ro$cols[keep] else ro$obs <- ro$obs[, keep, drop = FALSE]
-      ro$legal <- ro$legal[, keep, drop = FALSE]
-      ro[c("act", "logp", "adv", "ret")] <- lapply(ro[c("act", "logp", "adv", "ret")],
-                                                   function(v) v[keep])
-      state$rollout <- ro
-    }
+    if (fsp || !all(b_keep)) state$rollout <- rollout_keep(state$rollout, b_keep)
     # statistics move only now, after GAE and the bootstrap used the old ones
     if (meta$normalize_obs) state$obs_rms <- running_stats_update(state$obs_rms, state$rollout$obs)
     if (meta$normalize_reward) state$rew_rms <- running_stats_update(state$rew_rms, matrix(b_ret, 1L))
@@ -649,11 +779,9 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     state$legal <- legal
     prof_tick(tk, "collect: gae")
     info <- c(episodes = n_done)
-    if (fsp) info <- c(info, used = length(state$rollout$logp), pool_games = pool_games,
-                       pool_win = if (pool_games > 0) pool_wins / pool_games else NA_real_,
-                       pool_loss = if (pool_games > 0) pool_losses / pool_games else NA_real_,
-                       pool_win_x = if (side_games[[1]] > 0) side_wins[[1]] / side_games[[1]] else NA_real_,
-                       pool_win_o = if (side_games[[2]] > 0) side_wins[[2]] / side_games[[2]] else NA_real_)
+    if (masked && !fsp) info <- c(info, used = length(state$rollout$logp))
+    if (fsp) info <- c(info, fsp_info(length(state$rollout$logp), pool_games, pool_wins,
+                                      pool_losses, side_games, side_wins))
     list(state = state, steps = N, info = info)
   }
 
@@ -661,10 +789,37 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
   # rollout comes down once; GAE and the rollout list as on the host path.
   collect_resident <- function(state, env) {
     n_env <- env$n
+    # The recording, its buffers and the return tracker are sized for one
+    # n_env: a different environment size rebuilds them all.
+    if (!is.null(state$res_n) && state$res_n != n_env) {
+      state$captures <- ppo_free_captures(state$captures)
+      state$res_ad <- NULL
+      state$ret_track <- NULL
+      state$vs_pool <- NULL                         # fsp: draw anew for the new games
+    }
+    fsp <- !is.null(pool)
+    # fsp: snapshot and opponent as on the host path; vs_pool / side are drawn
+    # here for the first games only, the recording redraws them on the device
+    if (fsp) state <- pool_start(state, n_env)
     cap <- state$captures
-    if (is.null(cap$res_step)) ppo_res_setup(state$net, cap, n_env, n_steps)
+    ad <- state$res_ad
+    if (is.null(ad)) {
+      # resumed or re-initialized state: the adapter is not kept in checkpoints
+      ad <- ppo_res_adapter(env, state$box, !is.null(pool), capture, state$meta, state$device,
+                            rollout)
+      state$res_ad <- ad
+    }
+    # one normalization for the whole rollout, used again in update()
+    norm <- obs_norm(state)
+    if (is.null(cap$res_step))
+      ppo_res_setup(state$net, cap, ad, n_env, n_steps, gamma, clip_obs = norm$clip_obs,
+                    # p_self = 1: no game is against the pool, no opponent forward
+                    opp = if (fsp && pool$p_self < 1)
+                      list(net = state$opp_net, p_self = pool$p_self,
+                           vs_pool = state$vs_pool, side = state$side))
+    state$res_n <- n_env
     tk <- prof_start()
-    r <- ppo_res_rollout(cap, n_env, n_steps)
+    r <- ppo_res_rollout(cap, ad, n_env, n_steps, norm = norm)
     tk <- prof_tick(tk, "collect: resident")
     b_rew <- r$rew
     if (state$meta$normalize_reward) {
@@ -677,16 +832,40 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         b_rew[, t] <- scale_reward(b_rew[, t], state$rew_rms, epsilon, clip_reward)
       }
     }
+    # truncation bootstrap after scaling, as on the host path
+    b_rew <- b_rew + r$boot
     adv <- ppo_gae(b_rew, r$val, r$done, r$last_val, gamma, lambda, state$turn_sign)
     N <- n_env * n_steps
     state$rollout <- list(obs = NULL, cols = seq_len(N) - 1,
-                          act = as.integer(round(as.numeric(r$act))), legal = r$legal,
+                          act = if (state$box) r$act else as.integer(round(as.numeric(r$act))),
+                          legal = r$legal,
                           logp = as.numeric(r$logp), adv = as.numeric(adv),
-                          ret = as.numeric(adv + r$val), norm = NULL)
+                          ret = as.numeric(adv + r$val), norm = norm)
+    info <- c(episodes = sum(r$done))
+    if (fsp) {
+      # the pool games that ended, with vs_pool / side before the redraw; the
+      # reward is for the side that just moved
+      # without the opponent in the recording (p_self = 1) nothing is the pool's
+      opp <- if (is.null(r$keep)) r$done < 0 else r$keep < 0.5
+      ended <- if (is.null(r$keep)) opp else r$vs_pool > 0.5 & r$done > 0.5
+      won <- ended & ifelse(opp, r$rew < 0, r$rew > 0)
+      lost <- ended & ifelse(opp, r$rew > 0, r$rew < 0)
+      as_x <- if (is.null(r$keep)) opp else r$side < 0.5
+      state$rollout <- rollout_keep(state$rollout, !opp)
+      info <- c(info, fsp_info(length(state$rollout$logp), sum(ended), sum(won), sum(lost),
+                               c(sum(ended & as_x), sum(ended & !as_x)),
+                               c(sum(won & as_x), sum(won & !as_x))))
+    }
+    # statistics move only now, after GAE and the bootstrap used the old ones
+    # of the observations the update keeps, as on the host path
+    if (state$meta$normalize_obs) {
+      mo <- ppo_res_moments(cap, N, state$rollout$cols)
+      state$obs_rms <- running_stats_merge(state$obs_rms, mo$mean, mo$var, mo$n)
+    }
     if (state$meta$normalize_reward)
       state$rew_rms <- running_stats_update(state$rew_rms, matrix(b_ret, 1L))
     prof_tick(tk, "collect: gae")
-    list(state = state, steps = N, info = c(episodes = sum(r$done)))
+    list(state = state, steps = N, info = info)
   }
 
   update <- function(state) {

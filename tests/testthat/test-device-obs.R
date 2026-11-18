@@ -40,16 +40,24 @@ test_that("cube device obs and final_obs equal the host ones", {
     for (t in 1:10) {
       r <- rl_step(env, sample.int(env$action_space$n, n, TRUE) - 1L)
       out$obs[[t + 1L]] <- as.matrix(r$obs)
-      tr <- r$truncated & !r$terminated
-      if (any(tr)) out$fin[[length(out$fin) + 1L]] <- r$final_obs[tr, , drop = FALSE]
+      # final_obs: rows of the games that ended (solved or truncated), NA elsewhere
+      out$fin[[t]] <- r$final_obs
+      expect_identical(apply(is.na(r$final_obs), 1, all), !(r$terminated | r$truncated))
     }
     out
   }
-  g <- run("gpu")
   h <- run("cpu")
-  expect_identical(g$obs, h$obs)
-  expect_true(length(h$fin) > 0)                 # max_steps = 4 truncates in 10 steps
-  expect_identical(g$fin, h$fin)
+  # max_steps = 4 truncates in 10 steps
+  expect_true(any(vapply(h$fin, function(f) any(!is.na(f)), NA)))
+  # both GPU transfer paths for finished games: column by column (threshold
+  # above n) and the whole matrices in one go (threshold 1)
+  for (bulk_min in c(n + 1L, 1L)) {
+    old <- options(rltoolsR.cube_bulk_min = bulk_min)
+    g <- run("gpu")
+    options(old)
+    expect_identical(g$obs, h$obs)
+    expect_identical(g$fin, h$fin)
+  }
 })
 
 test_that("a copy from another device's tensor is an error, not a host copy", {

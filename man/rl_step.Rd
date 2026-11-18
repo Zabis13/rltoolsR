@@ -16,12 +16,12 @@ actions: cell indices `0..8` (tic-tac-toe), move indices
 `0..length(env$move_names) - 1` (cube) or `0` / `1` (cartpole).}
 }
 \value{
-List with `obs`, `reward`, `terminated` and `truncated`;
-  `rl_vec_env` adds `final_obs`. `rl_gpu_env` adds, by environment:
-  tic-tac-toe `legal` (legal-action mask for the next move) and `player`
-  (side to move); cube `legal` (all moves) and `final_obs` when a game
-  was truncated; cartpole `final_obs` when a game ended. Vectorized fields
-  have one row or element per copy.
+List with `obs`, `reward`, `terminated` and `truncated`; a single
+  `rl_env` adds `info` (an empty list). Vectorized environments
+  (`rl_vec_env`, `rl_gpu_env`, `rl_mame_env`) add `final_obs` (see the
+  section below). `rl_gpu_env` adds, by environment: tic-tac-toe `legal`
+  (legal-action mask for the next move) and `player` (side to move); cube
+  `legal` (all moves). Vectorized fields have one row or element per copy.
 }
 \description{
 Episode ends when `terminated` (terminal state) or `truncated`
@@ -31,7 +31,31 @@ Episode ends when `terminated` (terminal state) or `truncated`
 A `rl_vec_env` resets finished copies in the same step: `obs` holds
 the first observation of the new episode and `final_obs` the last
 observation of the finished one (use it to bootstrap on truncation).
+
+A single `rl_env` does not reset itself: a step after the episode ended is
+an error until [rl_reset()] (or [rl_load_state()]).
 }
+\section{Differences from Gymnasium}{
+
+\itemize{
+  \item [rl_reset()] returns the observation only, not `(obs, info)`.
+  \item Extra per-step values (`legal`, `player`, `active`, `end`) are
+    fields of the result, not entries of an `info` dict; a single
+    `rl_env` returns an empty `info = list()` in their place.
+  \item `terminated` and `truncated` are never both `TRUE`: `truncated` is
+    set only when the step limit is reached and the episode did not end
+    by itself. Bootstrap from `final_obs` only when `truncated` (and not
+    `terminated`); keep this rule when wrapping outside environments.
+  \item Vectorized environments auto-reset in the same step (Gymnasium's
+    `SAME_STEP` mode, not its default `NEXT_STEP`). `final_obs` is always
+    present: rows of the copies that ended in this step (`terminated |
+    truncated`, the mask) hold their last observation, the other rows are
+    `NA`.
+  \item Observations come back as R doubles. GPU paths hold them as f32
+    on the device; integer states (toy_text) are exact there.
+}
+}
+
 \examples{
 env <- rl_env("pendulum", seed = 1)
 obs <- rl_reset(env)

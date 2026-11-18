@@ -45,6 +45,23 @@ test_that("vec env autoresets on truncation", {
   expect_false(any(r$truncated))
 })
 
+test_that("vec env final_obs: the last observation of ended copies, NA for the others", {
+  venv <- rl_vec_env("cartpole", n = 3, seed = 1)
+  rl_reset(venv)
+  seen <- FALSE
+  for (t in 1:60) {
+    # copy 1 pushes right until the pole falls, copies 2 and 3 alternate
+    r <- rl_step(venv, c(1, t %% 2, t %% 2))
+    done <- r$terminated | r$truncated
+    expect_identical(apply(is.na(r$final_obs), 1, all), !done)
+    if (any(done)) {
+      seen <- TRUE
+      expect_false(anyNA(r$final_obs[done, ]))
+    }
+  }
+  expect_true(seen)
+})
+
 test_that("vec env validates inputs", {
   expect_error(rl_vec_env("pendulum", n = 0))
   expect_error(rl_vec_env("nope", n = 2), "unknown environment")

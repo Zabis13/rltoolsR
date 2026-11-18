@@ -1,16 +1,18 @@
 Package: rltoolsR
 Type: Package
 Title: Reinforcement Learning Toolkit with 'ggmlR' Backend
-Version: 0.1.3
+Version: 0.1.5
 Authors@R: c(
     person("Yuri", "Baramykov", email = "lbsbmsu@mail.ru", role = c("aut", "cre"),
            comment = c(ORCID = "0009-0000-7627-4217")),
     person("Jonas", "Eschmann", role = c("ctb", "cph"),
            comment = "Author of the 'RLtools' library; pendulum, acrobot and car environments in src/env_control.cpp are ported from it"),
     person("OpenAI", role = "cph",
-           comment = "'Gym'/'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R"),
+           comment = "'Gym'/'Gymnasium' acrobot, CartPole, MountainCar, Pendulum, FrozenLake, CliffWalking, Taxi and Blackjack environments ported in src/env_control.cpp, src/env_toy_text.cpp, R/gpu_cartpole.R, R/gpu_mountain_car.R and R/gpu_pendulum.R"),
     person("Farama Foundation", role = "cph",
-           comment = "'Gymnasium' acrobot and CartPole environments ported in src/env_control.cpp and R/gpu_cartpole.R"),
+           comment = "'Gymnasium' acrobot, CartPole, MountainCar, Pendulum, FrozenLake, CliffWalking, Taxi and Blackjack environments ported in src/env_control.cpp, src/env_toy_text.cpp, R/gpu_cartpole.R, R/gpu_mountain_car.R and R/gpu_pendulum.R"),
+    person("Erin", "Catto", role = c("ctb", "cph"),
+           comment = "Author of the 'Box2D' physics library, bundled in src/box2d"),
     person("Christoph", "Dann", role = c("ctb", "cph"),
            comment = "Author of the RLPy acrobot environment"),
     person("Alborz", "Geramifard", role = c("ctb", "cph"),
