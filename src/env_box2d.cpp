@@ -30,10 +30,6 @@
 #include "box2d/box2d.h"
 #include "env.h"
 
-#ifndef _WIN32
-#include <dlfcn.h>
-#endif
-
 #define R_NO_REMAP
 #include <R.h>
 #include <Rinternals.h>
@@ -389,48 +385,6 @@ Env* make_box2d(const std::string& name, int64_t seed) {
 
 }  // namespace rltr
 
-// Internal Box2D functions (src/box2d/src), declared here only to take their
-// addresses for rlt_box2d_symbols(); never called through these declarations.
-extern "C" {
-void b2ComputeFatShapeAABB(void);
-void b2GetBodyTransformQuick(void);
-void b2UpdateBodyMassData(void);
-}
-
-// The shared object each Box2D function used on the segment's AABB path resolves
-// to, as the dynamic linker binds it for this library (dladdr()). All should be
-// this package's own library (the first entry, rlt_box2d_check itself); another
-// file means a symbol of another library in the process overrides Box2D's
-// (ELF symbol interposition, Linux). Empty strings on Windows.
-extern "C" SEXP rlt_box2d_check(void);
-extern "C" SEXP rlt_box2d_symbols(void) {
-    struct Sym { const char* name; const void* addr; };
-    const Sym syms[] = {
-        {"rlt_box2d_check", reinterpret_cast<const void*>(&rlt_box2d_check)},
-        {"b2ComputeFatShapeAABB", reinterpret_cast<const void*>(&b2ComputeFatShapeAABB)},
-        {"b2GetBodyTransformQuick", reinterpret_cast<const void*>(&b2GetBodyTransformQuick)},
-        {"b2ComputeSegmentBounds", reinterpret_cast<const void*>(&b2ComputeSegmentBounds)},
-        {"b2CreateSegmentShape", reinterpret_cast<const void*>(&b2CreateSegmentShape)},
-        {"b2Shape_GetSegment", reinterpret_cast<const void*>(&b2Shape_GetSegment)},
-        {"b2UpdateBodyMassData", reinterpret_cast<const void*>(&b2UpdateBodyMassData)},
-    };
-    const int n = static_cast<int>(sizeof(syms) / sizeof(syms[0]));
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
-    SEXP nms = PROTECT(Rf_allocVector(STRSXP, n));
-    for (int i = 0; i < n; i++) {
-        const char* file = "";
-#ifndef _WIN32
-        Dl_info info;
-        if (dladdr(syms[i].addr, &info) && info.dli_fname) file = info.dli_fname;
-#endif
-        SET_STRING_ELT(out, i, Rf_mkChar(file));
-        SET_STRING_ELT(nms, i, Rf_mkChar(syms[i].name));
-    }
-    Rf_setAttrib(out, R_NamesSymbol, nms);
-    UNPROTECT(2);
-    return out;
-}
-
 // A body dropped from 10 m onto ground with its top at y = 0, stepped as the
 // lunar lander is (50 Hz, LL_SUBSTEPS) for 2.4 s: its height at the end.
 // Ground: a polygon or a segment (as the lander's terrain). Body: 0 a 1 m box
@@ -483,105 +437,23 @@ static double drop_box(bool segment, bool lander_filter, int body = 0) {
     return y;
 }
 
-// Where a polygon-segment collision is lost, in three stages. out[0], out[1]:
-// narrow phase, b2CollideSegmentAndPolygon() of a 1 m box at (0, 0.4) and the
-// segment (-50, 0)-(50, 0): 2 points, separation -0.1. out[2..5]: the segment
-// shape's bounds in a world (lower x, y, upper x, y): -50, 0, 50, 0. out[6]:
-// broad phase, the most contacts the world held while a box fell onto the
-// segment (as in drop_box()): 1 when a contact was created. Then the steps of
-// the segment's bounds: out[7..10] b2ComputeSegmentBounds() with the identity
-// transform, no world (-50, 0, 50, 0); out[11..14] the ground body's transform
-// p.x, p.y, q.c, q.s (0, 0, 1, 0); out[15..18] the segment as stored in the
-// shape (-50, 0, 50, 0); out[19] shapes the broad-phase tree finds in a box
-// around the origin (1); out[20..23] the fat AABB the broad phase pairs by and
-// out[24..27] the AABB of the shape's tree node (both about -50, 0, 50, 0 plus
-// a small margin); out[28..31] b2ComputeSegmentBounds() with the body's
-// transform (-50, 0, 50, 0); out[32..35] and out[36..39] the shape's AABB
-// recomputed as shape creation does (b2Shape_ComputeFatAABB) with margin 0
-// (-50, 0, 50, 0) and 0.02 (-50.02, -0.02, 50.02, 0.02).
-static bool count_shape(b2ShapeId, void* context) {
-    ++*static_cast<int*>(context);
-    return true;
-}
-
-static void segment_checks(double out[40]) {
-    using namespace rltr;
-    b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
-    b2Polygon box = b2MakeBox(0.5f, 0.5f);
-    b2Transform xf = {{0.0f, 0.4f}, {1.0f, 0.0f}};
-    b2LocalManifold m = b2CollideSegmentAndPolygon(&seg, &box, xf);
-    out[0] = m.pointCount;
-    out[1] = m.pointCount > 0 ? std::min(m.points[0].separation,
-                                         m.pointCount > 1 ? m.points[1].separation : m.points[0].separation)
-                              : NA_REAL;
-
+// The bounding box of the segment (-50, 0)-(50, 0) on a static body (lower x, y,
+// upper x, y): about -50, 0, 50, 0 plus the speculative margin 0.02. gcc 15 for
+// x86-64-v3 got (2500, 0)-(0, 0) here without -fno-tree-slp-vectorize (see
+// ./configure).
+static void segment_bounds(double out[4]) {
     b2WorldDef wd = b2DefaultWorldDef();
-    wd.gravity = {0.0f, -10.0f};
     wd.workerCount = 1;
     b2WorldId world = b2CreateWorld(&wd);
     b2BodyDef gd = b2DefaultBodyDef();
     b2BodyId ground = b2CreateBody(world, &gd);
     b2ShapeDef gs = b2DefaultShapeDef();
-    b2ShapeId seg_shape = b2CreateSegmentShape(ground, &gs, &seg);
-    const b2AABB bb = b2Shape_GetBounds(seg_shape);
-    out[2] = bb.lowerBound.x;
-    out[3] = bb.lowerBound.y;
-    out[4] = bb.upperBound.x;
-    out[5] = bb.upperBound.y;
-
-    const b2WorldTransform id_xf = {{0.0f, 0.0f}, {1.0f, 0.0f}};
-    const b2AABB pure = b2ComputeSegmentBounds(&seg, id_xf);
-    out[7] = pure.lowerBound.x;
-    out[8] = pure.lowerBound.y;
-    out[9] = pure.upperBound.x;
-    out[10] = pure.upperBound.y;
-    const b2WorldTransform gxf = b2Body_GetTransform(ground);
-    out[11] = gxf.p.x;
-    out[12] = gxf.p.y;
-    out[13] = gxf.q.c;
-    out[14] = gxf.q.s;
-    const b2Segment stored = b2Shape_GetSegment(seg_shape);
-    out[15] = stored.point1.x;
-    out[16] = stored.point1.y;
-    out[17] = stored.point2.x;
-    out[18] = stored.point2.y;
-    int found = 0;
-    const b2AABB probe = {{-1.0f, -1.0f}, {1.0f, 1.0f}};
-    b2World_OverlapAABB(world, {0.0f, 0.0f}, probe, b2DefaultQueryFilter(), count_shape, &found);
-    out[19] = found;
-    const b2AABB fat = b2Shape_GetFatAABB(seg_shape);
-    out[20] = fat.lowerBound.x;
-    out[21] = fat.lowerBound.y;
-    out[22] = fat.upperBound.x;
-    out[23] = fat.upperBound.y;
-    const b2AABB tree = b2Shape_GetTreeAABB(seg_shape);
-    out[24] = tree.lowerBound.x;
-    out[25] = tree.lowerBound.y;
-    out[26] = tree.upperBound.x;
-    out[27] = tree.upperBound.y;
-    const b2AABB with_body = b2ComputeSegmentBounds(&seg, gxf);
-    const b2AABB re0 = b2Shape_ComputeFatAABB(seg_shape, 0.0f);
-    const b2AABB re2 = b2Shape_ComputeFatAABB(seg_shape, 0.02f);   // B2_SPECULATIVE_DISTANCE
-    const b2AABB* boxes[3] = {&with_body, &re0, &re2};
-    for (int k = 0; k < 3; k++) {
-        out[28 + 4 * k] = boxes[k]->lowerBound.x;
-        out[29 + 4 * k] = boxes[k]->lowerBound.y;
-        out[30 + 4 * k] = boxes[k]->upperBound.x;
-        out[31 + 4 * k] = boxes[k]->upperBound.y;
-    }
-
-    b2BodyDef bd = b2DefaultBodyDef();
-    bd.type = b2_dynamicBody;
-    bd.position = {0.0f, 10.0f};
-    b2BodyId body = b2CreateBody(world, &bd);
-    b2ShapeDef bs = b2DefaultShapeDef();
-    b2CreatePolygonShape(body, &bs, &box);
-    int max_contacts = 0;
-    for (int i = 0; i < 120; i++) {
-        b2World_Step(world, static_cast<float>(1.0 / LL_FPS), LL_SUBSTEPS);
-        max_contacts = std::max(max_contacts, b2World_GetCounters(world).contactCount);
-    }
-    out[6] = max_contacts;
+    b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
+    const b2AABB bb = b2Shape_GetBounds(b2CreateSegmentShape(ground, &gs, &seg));
+    out[0] = bb.lowerBound.x;
+    out[1] = bb.lowerBound.y;
+    out[2] = bb.upperBound.x;
+    out[3] = bb.upperBound.y;
     b2DestroyWorld(world);
 }
 
@@ -590,7 +462,7 @@ static void segment_checks(double out[40]) {
 // Then drop_box() heights: a box (0.5 at rest) on segment ground; on polygon
 // ground with the lander's filter; on segment ground with the lander's filter;
 // the lander's hull on segment ground (0.333); the hull with its legs. Then
-// segment_checks(): narrow phase, segment bounds, broad phase.
+// segment_bounds().
 extern "C" SEXP rlt_box2d_check(void) {
     b2WorldDef wd = b2DefaultWorldDef();
     wd.gravity = {0.0f, -10.0f};
@@ -621,10 +493,10 @@ extern "C" SEXP rlt_box2d_check(void) {
     const double y_seg_filt = drop_box(true, true);
     const double y_hull = drop_box(true, true, 1);
     const double y_legs = drop_box(true, true, 2);
-    double sc[40];
-    segment_checks(sc);
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, 49));
-    for (int i = 0; i < 40; i++) REAL(out)[9 + i] = sc[i];
+    double sb[4];
+    segment_bounds(sb);
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 13));
+    for (int i = 0; i < 4; i++) REAL(out)[9 + i] = sb[i];
     REAL(out)[0] = v.major;
     REAL(out)[1] = v.minor;
     REAL(out)[2] = v.revision;

@@ -2013,50 +2013,6 @@ b2AABB b2Shape_GetBounds( b2ShapeId shapeId )
 	return shape->aabb;
 }
 
-// rltoolsR: diagnostics of the broad phase (test-box2d.R)
-b2AABB b2Shape_GetFatAABB( b2ShapeId shapeId )
-{
-	b2World* world = b2GetWorld( shapeId.world0 );
-	if ( world == NULL )
-	{
-		return (b2AABB){ 0 };
-	}
-
-	b2Shape* shape = b2GetShape( world, shapeId );
-	return *b2Array_Get( world->fatAABBs, shape->id );
-}
-
-b2AABB b2Shape_GetTreeAABB( b2ShapeId shapeId )
-{
-	b2World* world = b2GetWorld( shapeId.world0 );
-	if ( world == NULL )
-	{
-		return (b2AABB){ 0 };
-	}
-
-	b2Shape* shape = b2GetShape( world, shapeId );
-	if ( shape->proxyKey == B2_NULL_INDEX )
-	{
-		return (b2AABB){ 0 };
-	}
-	return b2DynamicTree_GetProxyBounds( world->broadPhase.trees + B2_PROXY_TYPE( shape->proxyKey ),
-										 B2_PROXY_ID( shape->proxyKey ) );
-}
-
-b2AABB b2Shape_ComputeFatAABB( b2ShapeId shapeId, float extra )
-{
-	b2World* world = b2GetWorld( shapeId.world0 );
-	if ( world == NULL )
-	{
-		return (b2AABB){ 0 };
-	}
-
-	b2Shape* shape = b2GetShape( world, shapeId );
-	b2Body* body = b2Array_Get( world->bodies, shape->bodyId );
-	b2WorldTransform transform = b2GetBodyTransformQuick( world, body );
-	return b2ComputeFatShapeAABB( shape, transform, extra );
-}
-
 b2MassData b2Shape_ComputeMassData( b2ShapeId shapeId )
 {
 	b2World* world = b2GetWorld( shapeId.world0 );

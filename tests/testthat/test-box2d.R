@@ -1,15 +1,3 @@
-# Where the dynamic linker binds Box2D's functions for this package
-# (rlt_box2d_symbols(), dladdr()): all in this package's own library. Another
-# file means a symbol of another library loaded in the process overrides
-# Box2D's (ELF symbol interposition, Linux). Not on Windows (no dladdr).
-test_that("Box2D's functions resolve to this package's library", {
-  skip_on_os("windows")
-  s <- .Call(rltoolsR:::rlt_box2d_symbols)
-  message(paste(sprintf("  %-24s %s", names(s), s), collapse = "\n"))
-  expect_true(all(s == s[["rlt_box2d_check"]]),
-              info = paste(sprintf("%s: %s", names(s), s), collapse = "; "))
-})
-
 # The bundled Box2D v3 (src/box2d) builds, links and simulates: a box dropped
 # from 10 m comes to rest on the ground at y = 0.5 (its half height).
 test_that("bundled Box2D builds and simulates a falling box", {
@@ -18,71 +6,12 @@ test_that("bundled Box2D builds and simulates a falling box", {
   expect_equal(r[4], 0.5, tolerance = 0.02)
 })
 
-# A polygon-segment collision in its stages (segment_checks()): narrow phase,
-# the segment's bounds, broad phase.
-test_that("Box2D: narrow phase, a box overlapping a segment has 2 contact points", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[10], 2)
-  expect_lt(abs(r[11] - (-0.1)), 1e-3)               # the box's bottom 0.1 below the segment
-})
-
-# How a segment's bounds are made, step by step (b2CreateSegmentShape ->
-# body transform -> stored segment -> b2ComputeSegmentBounds -> shape->aabb ->
-# broad-phase tree)
-test_that("Box2D: b2ComputeSegmentBounds() alone, identity transform", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[17:20], c(-50, 0, 50, 0), info = paste(r[17:20], collapse = " "))
-})
-
-test_that("Box2D: a static body's transform", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[21:24], c(0, 0, 1, 0), info = paste(r[21:24], collapse = " "))
-})
-
-test_that("Box2D: the segment as stored in the shape", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[25:28], c(-50, 0, 50, 0), info = paste(r[25:28], collapse = " "))
-})
-
-test_that("Box2D: b2ComputeSegmentBounds() with the body's transform", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[38:41], c(-50, 0, 50, 0), info = paste(r[38:41], collapse = " "))
-})
-
-test_that("Box2D: the shape's AABB recomputed as at creation, margin 0", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[42:45], c(-50, 0, 50, 0), info = paste(r[42:45], collapse = " "))
-})
-
-test_that("Box2D: the shape's AABB recomputed as at creation, margin 0.02", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[46:49], c(-50.02, -0.02, 50.02, 0.02), tolerance = 1e-5,
-               info = paste(r[46:49], collapse = " "))
-})
-
-test_that("Box2D: the broad-phase tree finds the segment near the origin", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_equal(r[29], 1)
-})
-
-test_that("Box2D: the broad phase's fat AABB of the segment", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_true(all(abs(r[30:33] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[30:33], collapse = " "))
-})
-
-test_that("Box2D: the segment's node AABB in the broad-phase tree", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_true(all(abs(r[34:37] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[34:37], collapse = " "))
-})
-
+# A segment shape's bounding box (segment_bounds()). gcc 15 for x86-64-v3
+# miscompiled it without -fno-tree-slp-vectorize (see ./configure): (2500, 0)-
+# (0, 0), and bodies fell through segment ground.
 test_that("Box2D: a segment shape's bounds", {
   r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_true(all(abs(r[12:15] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[12:15], collapse = " "))
-})
-
-test_that("Box2D: broad phase, a box falling onto a segment gets a contact", {
-  r <- .Call(rltoolsR:::rlt_box2d_check)
-  expect_gte(r[16], 1)
+  expect_true(all(abs(r[10:13] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[10:13], collapse = " "))
 })
 
 # Step by step towards the lunar lander (src/env_box2d.cpp, drop_box()): each
