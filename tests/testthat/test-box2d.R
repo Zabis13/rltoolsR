@@ -32,6 +32,22 @@ test_that("Box2D: the segment as stored in the shape", {
   expect_equal(r[25:28], c(-50, 0, 50, 0), info = paste(r[25:28], collapse = " "))
 })
 
+test_that("Box2D: b2ComputeSegmentBounds() with the body's transform", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[38:41], c(-50, 0, 50, 0), info = paste(r[38:41], collapse = " "))
+})
+
+test_that("Box2D: the shape's AABB recomputed as at creation, margin 0", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[42:45], c(-50, 0, 50, 0), info = paste(r[42:45], collapse = " "))
+})
+
+test_that("Box2D: the shape's AABB recomputed as at creation, margin 0.02", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[46:49], c(-50.02, -0.02, 50.02, 0.02), tolerance = 1e-5,
+               info = paste(r[46:49], collapse = " "))
+})
+
 test_that("Box2D: the broad-phase tree finds the segment near the origin", {
   r <- .Call(rltoolsR:::rlt_box2d_check)
   expect_equal(r[29], 1)

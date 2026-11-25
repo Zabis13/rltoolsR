@@ -449,13 +449,16 @@ static double drop_box(bool segment, bool lander_filter, int body = 0) {
 // shape (-50, 0, 50, 0); out[19] shapes the broad-phase tree finds in a box
 // around the origin (1); out[20..23] the fat AABB the broad phase pairs by and
 // out[24..27] the AABB of the shape's tree node (both about -50, 0, 50, 0 plus
-// a small margin).
+// a small margin); out[28..31] b2ComputeSegmentBounds() with the body's
+// transform (-50, 0, 50, 0); out[32..35] and out[36..39] the shape's AABB
+// recomputed as shape creation does (b2Shape_ComputeFatAABB) with margin 0
+// (-50, 0, 50, 0) and 0.02 (-50.02, -0.02, 50.02, 0.02).
 static bool count_shape(b2ShapeId, void* context) {
     ++*static_cast<int*>(context);
     return true;
 }
 
-static void segment_checks(double out[28]) {
+static void segment_checks(double out[40]) {
     using namespace rltr;
     b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
     b2Polygon box = b2MakeBox(0.5f, 0.5f);
@@ -510,6 +513,16 @@ static void segment_checks(double out[28]) {
     out[25] = tree.lowerBound.y;
     out[26] = tree.upperBound.x;
     out[27] = tree.upperBound.y;
+    const b2AABB with_body = b2ComputeSegmentBounds(&seg, gxf);
+    const b2AABB re0 = b2Shape_ComputeFatAABB(seg_shape, 0.0f);
+    const b2AABB re2 = b2Shape_ComputeFatAABB(seg_shape, 0.02f);   // B2_SPECULATIVE_DISTANCE
+    const b2AABB* boxes[3] = {&with_body, &re0, &re2};
+    for (int k = 0; k < 3; k++) {
+        out[28 + 4 * k] = boxes[k]->lowerBound.x;
+        out[29 + 4 * k] = boxes[k]->lowerBound.y;
+        out[30 + 4 * k] = boxes[k]->upperBound.x;
+        out[31 + 4 * k] = boxes[k]->upperBound.y;
+    }
 
     b2BodyDef bd = b2DefaultBodyDef();
     bd.type = b2_dynamicBody;
@@ -562,10 +575,10 @@ extern "C" SEXP rlt_box2d_check(void) {
     const double y_seg_filt = drop_box(true, true);
     const double y_hull = drop_box(true, true, 1);
     const double y_legs = drop_box(true, true, 2);
-    double sc[28];
+    double sc[40];
     segment_checks(sc);
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, 37));
-    for (int i = 0; i < 28; i++) REAL(out)[9 + i] = sc[i];
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 49));
+    for (int i = 0; i < 40; i++) REAL(out)[9 + i] = sc[i];
     REAL(out)[0] = v.major;
     REAL(out)[1] = v.minor;
     REAL(out)[2] = v.revision;

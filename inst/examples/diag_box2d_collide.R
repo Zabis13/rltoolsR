@@ -39,6 +39,12 @@ cat(sprintf("  ground body transform: p (%g, %g), q (%g, %g)  ((0, 0), (1, 0))\n
             r[21], r[22], r[23], r[24]))
 cat(sprintf("  stored segment: (%g, %g) - (%g, %g)  ((-50, 0) - (50, 0))\n",
             r[25], r[26], r[27], r[28]))
+cat(sprintf("  b2ComputeSegmentBounds, body transform: (%g, %g) - (%g, %g)  ((-50, 0) - (50, 0))\n",
+            r[38], r[39], r[40], r[41]))
+cat(sprintf("  recomputed as at creation, margin 0: (%g, %g) - (%g, %g)  ((-50, 0) - (50, 0))\n",
+            r[42], r[43], r[44], r[45]))
+cat(sprintf("  recomputed as at creation, margin 0.02: (%g, %g) - (%g, %g)  ((-50.02, -0.02) - (50.02, 0.02))\n",
+            r[46], r[47], r[48], r[49]))
 cat(sprintf("  broad-phase tree near the origin: %g shape(s) (1)\n", r[29]))
 cat(sprintf("  fat AABB (broad-phase pairs): (%g, %g) - (%g, %g)  (about (-50, 0) - (50, 0))\n",
             r[30], r[31], r[32], r[33]))
