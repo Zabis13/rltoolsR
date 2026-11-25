@@ -14,6 +14,39 @@ test_that("Box2D: narrow phase, a box overlapping a segment has 2 contact points
   expect_lt(abs(r[11] - (-0.1)), 1e-3)               # the box's bottom 0.1 below the segment
 })
 
+# How a segment's bounds are made, step by step (b2CreateSegmentShape ->
+# body transform -> stored segment -> b2ComputeSegmentBounds -> shape->aabb ->
+# broad-phase tree)
+test_that("Box2D: b2ComputeSegmentBounds() alone, identity transform", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[17:20], c(-50, 0, 50, 0), info = paste(r[17:20], collapse = " "))
+})
+
+test_that("Box2D: a static body's transform", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[21:24], c(0, 0, 1, 0), info = paste(r[21:24], collapse = " "))
+})
+
+test_that("Box2D: the segment as stored in the shape", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[25:28], c(-50, 0, 50, 0), info = paste(r[25:28], collapse = " "))
+})
+
+test_that("Box2D: the broad-phase tree finds the segment near the origin", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[29], 1)
+})
+
+test_that("Box2D: the broad phase's fat AABB of the segment", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_true(all(abs(r[30:33] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[30:33], collapse = " "))
+})
+
+test_that("Box2D: the segment's node AABB in the broad-phase tree", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_true(all(abs(r[34:37] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[34:37], collapse = " "))
+})
+
 test_that("Box2D: a segment shape's bounds", {
   r <- .Call(rltoolsR:::rlt_box2d_check)
   expect_true(all(abs(r[12:15] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[12:15], collapse = " "))

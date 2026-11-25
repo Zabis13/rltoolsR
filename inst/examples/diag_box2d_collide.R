@@ -31,3 +31,16 @@ cat(sprintf("  narrow phase: %g points (2), separation %.4f (-0.1)\n", r[10], r[
 cat(sprintf("  segment bounds: lower (%g, %g), upper (%g, %g)  ((-50, 0), (50, 0))\n",
             r[12], r[13], r[14], r[15]))
 cat(sprintf("  broad phase: at most %g contacts during the fall (>= 1)\n", r[16]))
+
+cat("\nSegment bounds, step by step:\n")
+cat(sprintf("  b2ComputeSegmentBounds, identity: (%g, %g) - (%g, %g)  ((-50, 0) - (50, 0))\n",
+            r[17], r[18], r[19], r[20]))
+cat(sprintf("  ground body transform: p (%g, %g), q (%g, %g)  ((0, 0), (1, 0))\n",
+            r[21], r[22], r[23], r[24]))
+cat(sprintf("  stored segment: (%g, %g) - (%g, %g)  ((-50, 0) - (50, 0))\n",
+            r[25], r[26], r[27], r[28]))
+cat(sprintf("  broad-phase tree near the origin: %g shape(s) (1)\n", r[29]))
+cat(sprintf("  fat AABB (broad-phase pairs): (%g, %g) - (%g, %g)  (about (-50, 0) - (50, 0))\n",
+            r[30], r[31], r[32], r[33]))
+cat(sprintf("  tree node AABB: (%g, %g) - (%g, %g)  (about (-50, 0) - (50, 0))\n",
+            r[34], r[35], r[36], r[37]))

@@ -901,6 +901,12 @@ B2_API int b2Shape_GetSensorData( b2ShapeId shapeId, b2ShapeId* visitorIds, int 
 /// Get the current world AABB
 B2_API b2AABB b2Shape_GetBounds( b2ShapeId shapeId );
 
+/// rltoolsR: the fat AABB the broad phase pairs shapes by (world->fatAABBs). For diagnostics.
+B2_API b2AABB b2Shape_GetFatAABB( b2ShapeId shapeId );
+
+/// rltoolsR: the AABB of the shape's proxy node in the broad-phase tree. For diagnostics.
+B2_API b2AABB b2Shape_GetTreeAABB( b2ShapeId shapeId );
+
 /// Compute the mass data for a shape
 B2_API b2MassData b2Shape_ComputeMassData( b2ShapeId shapeId );
 

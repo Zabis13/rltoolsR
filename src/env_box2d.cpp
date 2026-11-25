@@ -442,8 +442,20 @@ static double drop_box(bool segment, bool lander_filter, int body = 0) {
 // segment (-50, 0)-(50, 0): 2 points, separation -0.1. out[2..5]: the segment
 // shape's bounds in a world (lower x, y, upper x, y): -50, 0, 50, 0. out[6]:
 // broad phase, the most contacts the world held while a box fell onto the
-// segment (as in drop_box()): 1 when a contact was created.
-static void segment_checks(double out[7]) {
+// segment (as in drop_box()): 1 when a contact was created. Then the steps of
+// the segment's bounds: out[7..10] b2ComputeSegmentBounds() with the identity
+// transform, no world (-50, 0, 50, 0); out[11..14] the ground body's transform
+// p.x, p.y, q.c, q.s (0, 0, 1, 0); out[15..18] the segment as stored in the
+// shape (-50, 0, 50, 0); out[19] shapes the broad-phase tree finds in a box
+// around the origin (1); out[20..23] the fat AABB the broad phase pairs by and
+// out[24..27] the AABB of the shape's tree node (both about -50, 0, 50, 0 plus
+// a small margin).
+static bool count_shape(b2ShapeId, void* context) {
+    ++*static_cast<int*>(context);
+    return true;
+}
+
+static void segment_checks(double out[28]) {
     using namespace rltr;
     b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
     b2Polygon box = b2MakeBox(0.5f, 0.5f);
@@ -467,6 +479,37 @@ static void segment_checks(double out[7]) {
     out[3] = bb.lowerBound.y;
     out[4] = bb.upperBound.x;
     out[5] = bb.upperBound.y;
+
+    const b2WorldTransform id_xf = {{0.0f, 0.0f}, {1.0f, 0.0f}};
+    const b2AABB pure = b2ComputeSegmentBounds(&seg, id_xf);
+    out[7] = pure.lowerBound.x;
+    out[8] = pure.lowerBound.y;
+    out[9] = pure.upperBound.x;
+    out[10] = pure.upperBound.y;
+    const b2WorldTransform gxf = b2Body_GetTransform(ground);
+    out[11] = gxf.p.x;
+    out[12] = gxf.p.y;
+    out[13] = gxf.q.c;
+    out[14] = gxf.q.s;
+    const b2Segment stored = b2Shape_GetSegment(seg_shape);
+    out[15] = stored.point1.x;
+    out[16] = stored.point1.y;
+    out[17] = stored.point2.x;
+    out[18] = stored.point2.y;
+    int found = 0;
+    const b2AABB probe = {{-1.0f, -1.0f}, {1.0f, 1.0f}};
+    b2World_OverlapAABB(world, {0.0f, 0.0f}, probe, b2DefaultQueryFilter(), count_shape, &found);
+    out[19] = found;
+    const b2AABB fat = b2Shape_GetFatAABB(seg_shape);
+    out[20] = fat.lowerBound.x;
+    out[21] = fat.lowerBound.y;
+    out[22] = fat.upperBound.x;
+    out[23] = fat.upperBound.y;
+    const b2AABB tree = b2Shape_GetTreeAABB(seg_shape);
+    out[24] = tree.lowerBound.x;
+    out[25] = tree.lowerBound.y;
+    out[26] = tree.upperBound.x;
+    out[27] = tree.upperBound.y;
 
     b2BodyDef bd = b2DefaultBodyDef();
     bd.type = b2_dynamicBody;
@@ -519,10 +562,10 @@ extern "C" SEXP rlt_box2d_check(void) {
     const double y_seg_filt = drop_box(true, true);
     const double y_hull = drop_box(true, true, 1);
     const double y_legs = drop_box(true, true, 2);
-    double sc[7];
+    double sc[28];
     segment_checks(sc);
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, 16));
-    for (int i = 0; i < 7; i++) REAL(out)[9 + i] = sc[i];
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 37));
+    for (int i = 0; i < 28; i++) REAL(out)[9 + i] = sc[i];
     REAL(out)[0] = v.major;
     REAL(out)[1] = v.minor;
     REAL(out)[2] = v.revision;
