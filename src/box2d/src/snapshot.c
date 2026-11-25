@@ -710,7 +710,11 @@ static bool b2DeserializeIntoShell( b2SnapReader* r, b2World* world )
 		{
 			b2Array_Resize( world->chainShapes, chainCount );
 			// Zero the whole array so free slots have NULL pointers
-			memset( world->chainShapes.data, 0, chainCount * sizeof( b2ChainShape ) );
+			// rltoolsR: data is NULL when chainCount is 0; memset(NULL, ...) is UB
+			if ( chainCount > 0 )
+			{
+				memset( world->chainShapes.data, 0, chainCount * sizeof( b2ChainShape ) );
+			}
 		}
 
 		for ( int i = 0; i < chainCount && r->ok; ++i )
@@ -760,7 +764,11 @@ static bool b2DeserializeIntoShell( b2SnapReader* r, b2World* world )
 		{
 			b2Array_Resize( world->sensors, sensorCount );
 			// Zero so inner array headers start clean
-			memset( world->sensors.data, 0, sensorCount * sizeof( b2Sensor ) );
+			// rltoolsR: data is NULL when sensorCount is 0; memset(NULL, ...) is UB
+			if ( sensorCount > 0 )
+			{
+				memset( world->sensors.data, 0, sensorCount * sizeof( b2Sensor ) );
+			}
 		}
 
 		for ( int i = 0; i < sensorCount && r->ok; ++i )
@@ -793,7 +801,11 @@ static bool b2DeserializeIntoShell( b2SnapReader* r, b2World* world )
 		if ( r->ok )
 		{
 			b2Array_Resize( world->islands, islandCount );
-			memset( world->islands.data, 0, islandCount * sizeof( b2Island ) );
+			// rltoolsR: data is NULL when islandCount is 0; memset(NULL, ...) is UB
+			if ( islandCount > 0 )
+			{
+				memset( world->islands.data, 0, islandCount * sizeof( b2Island ) );
+			}
 		}
 
 		for ( int i = 0; i < islandCount && r->ok; ++i )

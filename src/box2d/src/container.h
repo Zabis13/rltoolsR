@@ -98,7 +98,11 @@
 	do                                                                                                                           \
 	{                                                                                                                            \
 		b2Array_Reserve( a, n );                                                                                                 \
-		memset( ( a ).data, 0, ( n ) * sizeof( *( a ).data ) );                                                                  \
+		/* rltoolsR: data is NULL for n == 0; memset(NULL, ...) is UB */                                                        \
+		if ( ( n ) > 0 )                                                                                                         \
+		{                                                                                                                        \
+			memset( ( a ).data, 0, ( n ) * sizeof( *( a ).data ) );                                                              \
+		}                                                                                                                        \
 		( a ).count = ( n );                                                                                                     \
 	}                                                                                                                            \
 	while ( 0 )

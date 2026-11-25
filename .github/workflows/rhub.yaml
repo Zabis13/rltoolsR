@@ -38,6 +38,17 @@ jobs:
           r-version: ${{ matrix.config.r }}
           use-public-rspm: true
 
+      # R CMD check needs checkbashisms for the `cleanup` script; the r-hub
+      # containers do not ship it (Ubuntu: devscripts, Fedora: devscripts-checkbashisms)
+      - name: Install checkbashisms
+        if: ${{ matrix.config.container }}
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update && apt-get install -y --no-install-recommends devscripts
+          elif command -v dnf >/dev/null; then
+            dnf install -y devscripts-checkbashisms
+          fi
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           extra-packages: any::rcmdcheck
