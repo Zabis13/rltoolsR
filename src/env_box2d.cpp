@@ -61,6 +61,69 @@ const double LANDER_POLY[6][2] = {{-14, 17}, {-17, 0}, {-17, -10}, {17, -10}, {1
 
 constexpr uint64_t CAT_GROUND = 0x0001, CAT_LANDER = 0x0010, CAT_LEG = 0x0020;
 
+// The lander's body: the hull of LANDER_POLY at (x0, y0), colliding with the
+// ground only. Shared by LunarLander::build() and rlt_box2d_check().
+b2BodyId make_hull(b2WorldId world, double x0, double y0) {
+    b2BodyDef ld = b2DefaultBodyDef();
+    ld.type = b2_dynamicBody;
+    ld.position = {static_cast<float>(x0), static_cast<float>(y0)};
+    b2BodyId lander = b2CreateBody(world, &ld);
+    b2Vec2 pts[6];
+    for (int i = 0; i < 6; i++)
+        pts[i] = {static_cast<float>(LANDER_POLY[i][0] / LL_SCALE), static_cast<float>(LANDER_POLY[i][1] / LL_SCALE)};
+    b2Hull hull = b2ComputeHull(pts, 6);
+    b2Polygon body_poly = b2MakePolygon(&hull, 0.0f);
+    b2ShapeDef ls = b2DefaultShapeDef();
+    ls.density = 5.0f;
+    ls.material.friction = 0.1f;
+    ls.material.restitution = 0.0f;
+    ls.filter.categoryBits = CAT_LANDER;
+    ls.filter.maskBits = CAT_GROUND;
+    ls.enableContactEvents = true;
+    b2CreatePolygonShape(lander, &ls, &body_poly);
+    return lander;
+}
+
+// The two legs on revolute joints with spring motors, as in Gymnasium.
+void make_legs(b2WorldId world, b2BodyId lander, double x0, double y0, b2BodyId legs[2]) {
+    for (int k = 0; k < 2; k++) {
+        const int i = k == 0 ? -1 : 1;
+        b2BodyDef gd = b2DefaultBodyDef();
+        gd.type = b2_dynamicBody;
+        gd.position = {static_cast<float>(x0 - i * LEG_AWAY / LL_SCALE), static_cast<float>(y0)};
+        gd.rotation = b2MakeRot(static_cast<float>(i * 0.05));
+        legs[k] = b2CreateBody(world, &gd);
+        b2Polygon leg = b2MakeBox(static_cast<float>(LEG_W / LL_SCALE), static_cast<float>(LEG_H / LL_SCALE));
+        b2ShapeDef s = b2DefaultShapeDef();
+        s.density = 1.0f;
+        s.material.friction = 0.2f;
+        s.material.restitution = 0.0f;
+        s.filter.categoryBits = CAT_LEG;
+        s.filter.maskBits = CAT_GROUND;
+        s.enableContactEvents = true;
+        b2CreatePolygonShape(legs[k], &s, &leg);
+
+        b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+        jd.base.bodyIdA = lander;
+        jd.base.bodyIdB = legs[k];
+        jd.base.localFrameA.p = {0.0f, 0.0f};
+        jd.base.localFrameB.p = {static_cast<float>(i * LEG_AWAY / LL_SCALE), static_cast<float>(LEG_DOWN / LL_SCALE)};
+        jd.base.constraintHertz = LL_JOINT_HERTZ;
+        jd.enableMotor = true;
+        jd.enableLimit = true;
+        jd.maxMotorTorque = static_cast<float>(LEG_SPRING_TORQUE);
+        jd.motorSpeed = static_cast<float>(0.3 * i);
+        if (i == -1) {
+            jd.lowerAngle = 0.9f - 0.5f;
+            jd.upperAngle = 0.9f;
+        } else {
+            jd.lowerAngle = -0.9f;
+            jd.upperAngle = -0.9f + 0.5f;
+        }
+        b2CreateRevoluteJoint(world, &jd);
+    }
+}
+
 // Everything besides the Box2D world that a snapshot must restore (POD).
 struct LunarState {
     b2BodyId moon, lander, legs[2];
@@ -193,63 +256,11 @@ private:
         }
 
         const double x0 = W / 2, y0 = H;
-        b2BodyDef ld = b2DefaultBodyDef();
-        ld.type = b2_dynamicBody;
-        ld.position = {static_cast<float>(x0), static_cast<float>(y0)};
-        st_.lander = b2CreateBody(world_, &ld);
-        b2Vec2 pts[6];
-        for (int i = 0; i < 6; i++)
-            pts[i] = {static_cast<float>(LANDER_POLY[i][0] / LL_SCALE), static_cast<float>(LANDER_POLY[i][1] / LL_SCALE)};
-        b2Hull hull = b2ComputeHull(pts, 6);
-        b2Polygon body_poly = b2MakePolygon(&hull, 0.0f);
-        b2ShapeDef ls = b2DefaultShapeDef();
-        ls.density = 5.0f;
-        ls.material.friction = 0.1f;
-        ls.material.restitution = 0.0f;
-        ls.filter.categoryBits = CAT_LANDER;
-        ls.filter.maskBits = CAT_GROUND;
-        ls.enableContactEvents = true;
-        b2CreatePolygonShape(st_.lander, &ls, &body_poly);
+        st_.lander = make_hull(world_, x0, y0);
         const float fx = static_cast<float>(unif(-INITIAL_RANDOM, INITIAL_RANDOM));
         const float fy = static_cast<float>(unif(-INITIAL_RANDOM, INITIAL_RANDOM));
         b2Body_ApplyForceToCenter(st_.lander, {fx, fy}, true);
-
-        for (int k = 0; k < 2; k++) {
-            const int i = k == 0 ? -1 : 1;
-            b2BodyDef gd = b2DefaultBodyDef();
-            gd.type = b2_dynamicBody;
-            gd.position = {static_cast<float>(x0 - i * LEG_AWAY / LL_SCALE), static_cast<float>(y0)};
-            gd.rotation = b2MakeRot(static_cast<float>(i * 0.05));
-            st_.legs[k] = b2CreateBody(world_, &gd);
-            b2Polygon leg = b2MakeBox(static_cast<float>(LEG_W / LL_SCALE), static_cast<float>(LEG_H / LL_SCALE));
-            b2ShapeDef s = b2DefaultShapeDef();
-            s.density = 1.0f;
-            s.material.friction = 0.2f;
-            s.material.restitution = 0.0f;
-            s.filter.categoryBits = CAT_LEG;
-            s.filter.maskBits = CAT_GROUND;
-            s.enableContactEvents = true;
-            b2CreatePolygonShape(st_.legs[k], &s, &leg);
-
-            b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
-            jd.base.bodyIdA = st_.lander;
-            jd.base.bodyIdB = st_.legs[k];
-            jd.base.localFrameA.p = {0.0f, 0.0f};
-            jd.base.localFrameB.p = {static_cast<float>(i * LEG_AWAY / LL_SCALE), static_cast<float>(LEG_DOWN / LL_SCALE)};
-            jd.base.constraintHertz = LL_JOINT_HERTZ;
-            jd.enableMotor = true;
-            jd.enableLimit = true;
-            jd.maxMotorTorque = static_cast<float>(LEG_SPRING_TORQUE);
-            jd.motorSpeed = static_cast<float>(0.3 * i);
-            if (i == -1) {
-                jd.lowerAngle = 0.9f - 0.5f;
-                jd.upperAngle = 0.9f;
-            } else {
-                jd.lowerAngle = -0.9f;
-                jd.upperAngle = -0.9f + 0.5f;
-            }
-            b2CreateRevoluteJoint(world_, &jd);
-        }
+        make_legs(world_, st_.lander, x0, y0, st_.legs);
     }
 
     bool is(b2BodyId a, b2BodyId b) const { return B2_ID_EQUALS(a, b); }
@@ -374,8 +385,63 @@ Env* make_box2d(const std::string& name, int64_t seed) {
 
 }  // namespace rltr
 
+// A body dropped from 10 m onto ground with its top at y = 0, stepped as the
+// lunar lander is (50 Hz, LL_SUBSTEPS) for 2.4 s: its height at the end.
+// Ground: a polygon or a segment (as the lander's terrain). Body: 0 a 1 m box
+// (0.5 at rest), filter default or the lander's (category CAT_LANDER, mask
+// CAT_GROUND on a CAT_GROUND ground); 1 the lander's hull (its bottom is
+// 10 / LL_SCALE below the centre: 0.333 at rest); 2 the hull with its legs.
+static double drop_box(bool segment, bool lander_filter, int body = 0) {
+    using namespace rltr;
+    b2WorldDef wd = b2DefaultWorldDef();
+    wd.gravity = {0.0f, -10.0f};
+    wd.workerCount = 1;
+    b2WorldId world = b2CreateWorld(&wd);
+
+    b2BodyDef gd = b2DefaultBodyDef();
+    b2BodyId ground = b2CreateBody(world, &gd);
+    b2ShapeDef gs = b2DefaultShapeDef();
+    if (lander_filter) gs.filter.categoryBits = CAT_GROUND;
+    if (segment) {
+        b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
+        b2CreateSegmentShape(ground, &gs, &seg);
+    } else {
+        b2Polygon gbox = b2MakeOffsetBox(50.0f, 1.0f, {0.0f, -1.0f}, b2Rot_identity);
+        b2CreatePolygonShape(ground, &gs, &gbox);
+    }
+
+    b2BodyId box;
+    if (body == 0) {
+        b2BodyDef bd = b2DefaultBodyDef();
+        bd.type = b2_dynamicBody;
+        bd.position = {0.0f, 10.0f};
+        box = b2CreateBody(world, &bd);
+        b2ShapeDef bs = b2DefaultShapeDef();
+        if (lander_filter) {
+            bs.filter.categoryBits = CAT_LANDER;
+            bs.filter.maskBits = CAT_GROUND;
+        }
+        b2Polygon bbox = b2MakeBox(0.5f, 0.5f);
+        b2CreatePolygonShape(box, &bs, &bbox);
+    } else {
+        box = make_hull(world, 0.0, 10.0);
+        if (body == 2) {
+            b2BodyId legs[2];
+            make_legs(world, box, 0.0, 10.0, legs);
+        }
+    }
+
+    for (int i = 0; i < 120; i++) b2World_Step(world, static_cast<float>(1.0 / LL_FPS), LL_SUBSTEPS);
+    const double y = b2Body_GetPosition(box).y;
+    b2DestroyWorld(world);
+    return y;
+}
+
 // Build check: Box2D's version and the height of a 1 m box dropped from 10 m
 // onto the ground (top at y = 0) after 2 s -- it comes to rest at y = 0.5.
+// Then drop_box() heights: a box (0.5 at rest) on segment ground; on polygon
+// ground with the lander's filter; on segment ground with the lander's filter;
+// the lander's hull on segment ground (0.333); the hull with its legs.
 extern "C" SEXP rlt_box2d_check(void) {
     b2WorldDef wd = b2DefaultWorldDef();
     wd.gravity = {0.0f, -10.0f};
@@ -401,11 +467,21 @@ extern "C" SEXP rlt_box2d_check(void) {
     b2DestroyWorld(world);
 
     b2Version v = b2GetVersion();
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, 4));
+    const double y_seg = drop_box(true, false);
+    const double y_filt = drop_box(false, true);
+    const double y_seg_filt = drop_box(true, true);
+    const double y_hull = drop_box(true, true, 1);
+    const double y_legs = drop_box(true, true, 2);
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 9));
     REAL(out)[0] = v.major;
     REAL(out)[1] = v.minor;
     REAL(out)[2] = v.revision;
     REAL(out)[3] = y;
+    REAL(out)[4] = y_seg;
+    REAL(out)[5] = y_filt;
+    REAL(out)[6] = y_seg_filt;
+    REAL(out)[7] = y_hull;
+    REAL(out)[8] = y_legs;
     UNPROTECT(1);
     return out;
 }

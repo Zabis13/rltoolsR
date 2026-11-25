@@ -6,6 +6,35 @@ test_that("bundled Box2D builds and simulates a falling box", {
   expect_equal(r[4], 0.5, tolerance = 0.02)
 })
 
+# Step by step towards the lunar lander (src/env_box2d.cpp, drop_box()): each
+# drops a body from 10 m, stepped as the lander (50 Hz, 8 sub-steps). The first
+# that fails tells what does not collide.
+test_that("Box2D: a box rests on segment ground", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[5], 0.5, tolerance = 0.02)
+})
+
+test_that("Box2D: a box with the lander's filter rests on polygon ground", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[6], 0.5, tolerance = 0.02)
+})
+
+test_that("Box2D: a box with the lander's filter rests on segment ground", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[7], 0.5, tolerance = 0.02)
+})
+
+test_that("Box2D: the lander's hull rests on segment ground", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[8], 10 / 30, tolerance = 0.02)       # bottom 10 / LL_SCALE below the centre
+})
+
+test_that("Box2D: the lander's hull with legs stays on segment ground", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_gt(r[9], 0.3)                               # not through the ground
+  expect_lt(r[9], 1)                                 # not hanging in the air
+})
+
 # ---- LunarLander (src/env_box2d.cpp, from gymnasium/envs/box2d/lunar_lander.py)
 
 # Gymnasium's heuristic() from lunar_lander.py, in R
@@ -37,6 +66,33 @@ ll_episode <- function(name, seed, policy) {
   }
   list(total = total, last = r, steps = t)
 }
+
+# Free fall of seed 1 against a reference run (inst/examples/
+# diag_lunar_lander_fall.R): start, flight, legs touching. Observation:
+# x, y, vx, vy, angle, angular velocity, leg1, leg2.
+ll_fall <- function(steps) {
+  env <- rl_env("lunar_lander", seed = 1)
+  obs <- list(rl_reset(env, seed = 1))
+  for (t in seq_len(steps)) obs[[t + 1]] <- rl_step(env, 0)$obs
+  obs                                                # obs[[t + 1]]: after step t
+}
+
+test_that("lunar_lander free fall: start position (after step 1)", {
+  o <- ll_fall(1)[[2]]
+  expect_lt(abs(o[2] - 1.4138), 1e-3)
+})
+
+test_that("lunar_lander free fall: flight at step 50", {
+  o <- ll_fall(50)[[51]]
+  expect_lt(abs(o[2] - 0.7355), 1e-3)
+  expect_lt(abs(o[4] - (-1.267)), 1e-3)
+})
+
+test_that("lunar_lander free fall: legs touch the ground at step 73", {
+  obs <- ll_fall(73)
+  expect_equal(obs[[73]][7:8], c(0, 0))              # step 72: in the air
+  expect_equal(obs[[74]][7:8], c(1, 1))              # step 73: both legs down
+})
 
 test_that("lunar_lander spec", {
   env <- rl_env("lunar_lander", seed = 1)
