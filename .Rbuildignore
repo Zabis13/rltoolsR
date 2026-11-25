@@ -12,5 +12,7 @@
 ^TODO\.md$
 ^tools$
 ^src/.*\.o$
+^src/Makevars$
+^src/Makevars\.win$
 ^.*\.Rcheck$
 ^LICENSE\.md$

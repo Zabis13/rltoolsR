@@ -1,14 +1,21 @@
+# Template: ./configure generates src/Makevars from this file.
+
 CXX_STD = CXX17
 
 # Box2D v3 (src/box2d, MIT, Erin Catto): scalar math (no SIMD, portable),
 # assertions kept on and turned into R errors (src/box2d/src/core.c).
 PKG_CPPFLAGS = -Ibox2d/include
-PKG_CFLAGS = -DBOX2D_DISABLE_SIMD -DB2_ENABLE_ASSERT
+
+# GCC_SLP_CFLAGS / GCC_SLP_CXXFLAGS (substituted by ./configure):
+# -fno-tree-slp-vectorize when the compiler is gcc (not clang), else empty.
+PKG_CFLAGS = -DBOX2D_DISABLE_SIMD -DB2_ENABLE_ASSERT @GCC_SLP_CFLAGS@
+PKG_CXXFLAGS = @GCC_SLP_CXXFLAGS@
+
 # timer.c holds Box2D's thread helpers (unused: every world runs serially)
 PKG_LIBS = -pthread
 
 # R compiles only the top-level sources by itself: list every object.
-# A new .cpp in src/ must be added here (and in Makevars.win).
+# A new .cpp in src/ must be added here (and in Makevars.win.in).
 BOX2D_OBJECTS = box2d/src/aabb.o box2d/src/arena_allocator.o box2d/src/bitset.o \
   box2d/src/body.o box2d/src/broad_phase.o box2d/src/chain_builder.o \
   box2d/src/constraint_graph.o box2d/src/contact.o box2d/src/contact_solver.o \

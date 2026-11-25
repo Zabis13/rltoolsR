@@ -1,0 +1,45 @@
+#!/bin/sh
+
+# Configure script for rltoolsR: generates src/Makevars from src/Makevars.in.
+#
+# gcc workaround. gcc 15 targeting x86-64-v3 (the default of Ubuntu 26.04's
+# amd64v3 toolchain) miscompiles Box2D's SLP-vectorized point transforms: the
+# rotation c*x - s*y, s*x + c*y becomes a vfmaddsub that multiplies a register
+# by itself, so shape bounding boxes come out wrong (a segment from (-50, 0) to
+# (50, 0) gets (2500, 0)-(0, 0)) and bodies fall through segment ground
+# (tests/testthat/test-box2d.R). With gcc (not clang) the C and C++ sources get
+# -fno-tree-slp-vectorize; other compilers get nothing.
+
+: "${R_HOME:=$(R RHOME)}"
+CC=$("${R_HOME}/bin/R" CMD config CC)
+CXX=$("${R_HOME}/bin/R" CMD config CXX17)
+
+# is_gcc COMPILER LANG: the compiler is gcc and not clang (which also defines
+# __GNUC__)
+is_gcc() {
+  printf '#if !defined(__GNUC__) || defined(__clang__)\n#error not gcc\n#endif\n' |
+    $1 -x "$2" -E - >/dev/null 2>&1
+}
+
+# accepts COMPILER LANG FLAG: the compiler builds a trivial program with FLAG
+accepts() {
+  printf 'int main(void) { return 0; }\n' |
+    $1 "$3" -x "$2" -c -o /dev/null - >/dev/null 2>&1
+}
+
+GCC_SLP_CFLAGS=""
+GCC_SLP_CXXFLAGS=""
+if is_gcc "$CC" c && accepts "$CC" c -fno-tree-slp-vectorize; then
+  GCC_SLP_CFLAGS="-fno-tree-slp-vectorize"
+fi
+if is_gcc "$CXX" c++ && accepts "$CXX" c++ -fno-tree-slp-vectorize; then
+  GCC_SLP_CXXFLAGS="-fno-tree-slp-vectorize"
+fi
+echo "C compiler:   $CC  -> ${GCC_SLP_CFLAGS:-no extra flags}"
+echo "C++ compiler: $CXX  -> ${GCC_SLP_CXXFLAGS:-no extra flags}"
+
+echo "Generating src/Makevars..."
+sed \
+  -e "s|@GCC_SLP_CFLAGS@|$GCC_SLP_CFLAGS|g" \
+  -e "s|@GCC_SLP_CXXFLAGS@|$GCC_SLP_CXXFLAGS|g" \
+  src/Makevars.in > src/Makevars
