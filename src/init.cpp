@@ -13,7 +13,7 @@ SEXP rlt_env_legal_mask(SEXP);
 SEXP rlt_env_save_state(SEXP);
 SEXP rlt_env_load_state(SEXP, SEXP);
 SEXP rlt_env_table(SEXP);
-SEXP rlt_box2d_check(void);SEXP rlt_vec_make(SEXP, SEXP, SEXP);
+SEXP rlt_box2d_check(void);SEXP rlt_box2d_symbols(void);SEXP rlt_vec_make(SEXP, SEXP, SEXP);
 SEXP rlt_vec_spec(SEXP);
 SEXP rlt_vec_reset(SEXP, SEXP);
 SEXP rlt_vec_step(SEXP, SEXP);
@@ -32,7 +32,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"rlt_env_save_state", (DL_FUNC) &rlt_env_save_state, 1},
     {"rlt_env_load_state", (DL_FUNC) &rlt_env_load_state, 2},
     {"rlt_env_table", (DL_FUNC) &rlt_env_table, 1},
-    {"rlt_box2d_check", (DL_FUNC) &rlt_box2d_check, 0},    {"rlt_vec_make", (DL_FUNC) &rlt_vec_make, 3},
+    {"rlt_box2d_check", (DL_FUNC) &rlt_box2d_check, 0},    {"rlt_box2d_symbols", (DL_FUNC) &rlt_box2d_symbols, 0},    {"rlt_vec_make", (DL_FUNC) &rlt_vec_make, 3},
     {"rlt_vec_spec", (DL_FUNC) &rlt_vec_spec, 1},
     {"rlt_vec_reset", (DL_FUNC) &rlt_vec_reset, 2},
     {"rlt_vec_step", (DL_FUNC) &rlt_vec_step, 2},

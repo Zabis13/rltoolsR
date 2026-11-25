@@ -1,3 +1,15 @@
+# Where the dynamic linker binds Box2D's functions for this package
+# (rlt_box2d_symbols(), dladdr()): all in this package's own library. Another
+# file means a symbol of another library loaded in the process overrides
+# Box2D's (ELF symbol interposition, Linux). Not on Windows (no dladdr).
+test_that("Box2D's functions resolve to this package's library", {
+  skip_on_os("windows")
+  s <- .Call(rltoolsR:::rlt_box2d_symbols)
+  message(paste(sprintf("  %-24s %s", names(s), s), collapse = "\n"))
+  expect_true(all(s == s[["rlt_box2d_check"]]),
+              info = paste(sprintf("%s: %s", names(s), s), collapse = "; "))
+})
+
 # The bundled Box2D v3 (src/box2d) builds, links and simulates: a box dropped
 # from 10 m comes to rest on the ground at y = 0.5 (its half height).
 test_that("bundled Box2D builds and simulates a falling box", {

@@ -30,6 +30,10 @@
 #include "box2d/box2d.h"
 #include "env.h"
 
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
 #define R_NO_REMAP
 #include <R.h>
 #include <Rinternals.h>
@@ -384,6 +388,48 @@ Env* make_box2d(const std::string& name, int64_t seed) {
 }
 
 }  // namespace rltr
+
+// Internal Box2D functions (src/box2d/src), declared here only to take their
+// addresses for rlt_box2d_symbols(); never called through these declarations.
+extern "C" {
+void b2ComputeFatShapeAABB(void);
+void b2GetBodyTransformQuick(void);
+void b2UpdateBodyMassData(void);
+}
+
+// The shared object each Box2D function used on the segment's AABB path resolves
+// to, as the dynamic linker binds it for this library (dladdr()). All should be
+// this package's own library (the first entry, rlt_box2d_check itself); another
+// file means a symbol of another library in the process overrides Box2D's
+// (ELF symbol interposition, Linux). Empty strings on Windows.
+extern "C" SEXP rlt_box2d_check(void);
+extern "C" SEXP rlt_box2d_symbols(void) {
+    struct Sym { const char* name; const void* addr; };
+    const Sym syms[] = {
+        {"rlt_box2d_check", reinterpret_cast<const void*>(&rlt_box2d_check)},
+        {"b2ComputeFatShapeAABB", reinterpret_cast<const void*>(&b2ComputeFatShapeAABB)},
+        {"b2GetBodyTransformQuick", reinterpret_cast<const void*>(&b2GetBodyTransformQuick)},
+        {"b2ComputeSegmentBounds", reinterpret_cast<const void*>(&b2ComputeSegmentBounds)},
+        {"b2CreateSegmentShape", reinterpret_cast<const void*>(&b2CreateSegmentShape)},
+        {"b2Shape_GetSegment", reinterpret_cast<const void*>(&b2Shape_GetSegment)},
+        {"b2UpdateBodyMassData", reinterpret_cast<const void*>(&b2UpdateBodyMassData)},
+    };
+    const int n = static_cast<int>(sizeof(syms) / sizeof(syms[0]));
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
+    SEXP nms = PROTECT(Rf_allocVector(STRSXP, n));
+    for (int i = 0; i < n; i++) {
+        const char* file = "";
+#ifndef _WIN32
+        Dl_info info;
+        if (dladdr(syms[i].addr, &info) && info.dli_fname) file = info.dli_fname;
+#endif
+        SET_STRING_ELT(out, i, Rf_mkChar(file));
+        SET_STRING_ELT(nms, i, Rf_mkChar(syms[i].name));
+    }
+    Rf_setAttrib(out, R_NamesSymbol, nms);
+    UNPROTECT(2);
+    return out;
+}
 
 // A body dropped from 10 m onto ground with its top at y = 0, stepped as the
 // lunar lander is (50 Hz, LL_SUBSTEPS) for 2.4 s: its height at the end.

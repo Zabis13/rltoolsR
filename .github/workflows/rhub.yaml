@@ -66,6 +66,42 @@ jobs:
           gcc -v 2>&1 | tail -3 || true
           gcc -Q --help=target 2>/dev/null | grep -E '^\s+-march=|^\s+-mtune=' || true
 
+      # Diagnostics: the runner's gcc 15 targets x86-64-v3 by default. Build the
+      # package for baseline x86-64 in the release job only; devel and oldrel-1
+      # keep the default, so one run compares the two.
+      - name: Build for baseline x86-64 (release only)
+        if: matrix.config.os == 'ubuntu-latest' && matrix.config.r == 'release' && !matrix.config.container
+        shell: bash
+        run: |
+          mkdir -p ~/.R
+          {
+            echo "CFLAGS = -g -O2 -march=x86-64"
+            echo "C17FLAGS = -g -O2 -march=x86-64"
+            echo "C23FLAGS = -g -O2 -march=x86-64"
+            echo "CXXFLAGS = -g -O2 -march=x86-64"
+            echo "CXX17FLAGS = -g -O2 -march=x86-64"
+          } > ~/.R/Makevars
+          cat ~/.R/Makevars
+
+      # Diagnostics: assembly of Box2D's geometry.c (b2ComputeFatShapeAABB,
+      # b2ComputeSegmentBounds) for x86-64-v3 and for baseline x86-64
+      - name: Assemble Box2D geometry.c (release only)
+        if: matrix.config.os == 'ubuntu-latest' && matrix.config.r == 'release' && !matrix.config.container
+        shell: bash
+        run: |
+          mkdir -p asm
+          F="-g -O2 -fpic -DNDEBUG -DBOX2D_DISABLE_SIMD -DB2_ENABLE_ASSERT -Isrc/box2d/include -I$(R RHOME)/include"
+          gcc $F -march=x86-64-v3 -S src/box2d/src/geometry.c -o asm/geometry-x86-64-v3.s
+          gcc $F -march=x86-64 -S src/box2d/src/geometry.c -o asm/geometry-x86-64.s
+          ls -l asm
+
+      - name: Upload Box2D assembly (release only)
+        if: matrix.config.os == 'ubuntu-latest' && matrix.config.r == 'release' && !matrix.config.container
+        uses: actions/upload-artifact@v4
+        with:
+          name: box2d-geometry-asm
+          path: asm/
+
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true

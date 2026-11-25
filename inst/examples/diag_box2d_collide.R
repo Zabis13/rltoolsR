@@ -15,6 +15,12 @@ suppressMessages(devtools::load_all(quiet = TRUE))
 r <- .Call(rltoolsR:::rlt_box2d_check)
 cat(sprintf("Box2D %d.%d.%d\n\n", r[1], r[2], r[3]))
 
+# where each Box2D function resolves (dladdr): all should be this package's library
+s <- .Call(rltoolsR:::rlt_box2d_symbols)
+cat("Symbol binding:\n")
+cat(sprintf("  %-24s %s\n", names(s), s), sep = "")
+cat("\n")
+
 d <- data.frame(setup = c("box, polygon ground, default filter",
                           "box, segment ground, default filter",
                           "box, polygon ground, lander filter",
