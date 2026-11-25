@@ -437,11 +437,58 @@ static double drop_box(bool segment, bool lander_filter, int body = 0) {
     return y;
 }
 
+// Where a polygon-segment collision is lost, in three stages. out[0], out[1]:
+// narrow phase, b2CollideSegmentAndPolygon() of a 1 m box at (0, 0.4) and the
+// segment (-50, 0)-(50, 0): 2 points, separation -0.1. out[2..5]: the segment
+// shape's bounds in a world (lower x, y, upper x, y): -50, 0, 50, 0. out[6]:
+// broad phase, the most contacts the world held while a box fell onto the
+// segment (as in drop_box()): 1 when a contact was created.
+static void segment_checks(double out[7]) {
+    using namespace rltr;
+    b2Segment seg = {{-50.0f, 0.0f}, {50.0f, 0.0f}};
+    b2Polygon box = b2MakeBox(0.5f, 0.5f);
+    b2Transform xf = {{0.0f, 0.4f}, {1.0f, 0.0f}};
+    b2LocalManifold m = b2CollideSegmentAndPolygon(&seg, &box, xf);
+    out[0] = m.pointCount;
+    out[1] = m.pointCount > 0 ? std::min(m.points[0].separation,
+                                         m.pointCount > 1 ? m.points[1].separation : m.points[0].separation)
+                              : NA_REAL;
+
+    b2WorldDef wd = b2DefaultWorldDef();
+    wd.gravity = {0.0f, -10.0f};
+    wd.workerCount = 1;
+    b2WorldId world = b2CreateWorld(&wd);
+    b2BodyDef gd = b2DefaultBodyDef();
+    b2BodyId ground = b2CreateBody(world, &gd);
+    b2ShapeDef gs = b2DefaultShapeDef();
+    b2ShapeId seg_shape = b2CreateSegmentShape(ground, &gs, &seg);
+    const b2AABB bb = b2Shape_GetBounds(seg_shape);
+    out[2] = bb.lowerBound.x;
+    out[3] = bb.lowerBound.y;
+    out[4] = bb.upperBound.x;
+    out[5] = bb.upperBound.y;
+
+    b2BodyDef bd = b2DefaultBodyDef();
+    bd.type = b2_dynamicBody;
+    bd.position = {0.0f, 10.0f};
+    b2BodyId body = b2CreateBody(world, &bd);
+    b2ShapeDef bs = b2DefaultShapeDef();
+    b2CreatePolygonShape(body, &bs, &box);
+    int max_contacts = 0;
+    for (int i = 0; i < 120; i++) {
+        b2World_Step(world, static_cast<float>(1.0 / LL_FPS), LL_SUBSTEPS);
+        max_contacts = std::max(max_contacts, b2World_GetCounters(world).contactCount);
+    }
+    out[6] = max_contacts;
+    b2DestroyWorld(world);
+}
+
 // Build check: Box2D's version and the height of a 1 m box dropped from 10 m
 // onto the ground (top at y = 0) after 2 s -- it comes to rest at y = 0.5.
 // Then drop_box() heights: a box (0.5 at rest) on segment ground; on polygon
 // ground with the lander's filter; on segment ground with the lander's filter;
-// the lander's hull on segment ground (0.333); the hull with its legs.
+// the lander's hull on segment ground (0.333); the hull with its legs. Then
+// segment_checks(): narrow phase, segment bounds, broad phase.
 extern "C" SEXP rlt_box2d_check(void) {
     b2WorldDef wd = b2DefaultWorldDef();
     wd.gravity = {0.0f, -10.0f};
@@ -472,7 +519,10 @@ extern "C" SEXP rlt_box2d_check(void) {
     const double y_seg_filt = drop_box(true, true);
     const double y_hull = drop_box(true, true, 1);
     const double y_legs = drop_box(true, true, 2);
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, 9));
+    double sc[7];
+    segment_checks(sc);
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 16));
+    for (int i = 0; i < 7; i++) REAL(out)[9 + i] = sc[i];
     REAL(out)[0] = v.major;
     REAL(out)[1] = v.minor;
     REAL(out)[2] = v.revision;

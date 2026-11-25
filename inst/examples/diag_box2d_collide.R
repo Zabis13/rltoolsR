@@ -25,3 +25,9 @@ d <- data.frame(setup = c("box, polygon ground, default filter",
                 expected = c(rep("0.5", 4), "0.333", "0.3..1"))
 d$ok <- c(abs(r[4:7] - 0.5) < 0.02, abs(r[8] - 10 / 30) < 0.02, r[9] > 0.3 && r[9] < 1)
 print(d, row.names = FALSE, digits = 4)
+
+cat("\nPolygon-segment stages:\n")
+cat(sprintf("  narrow phase: %g points (2), separation %.4f (-0.1)\n", r[10], r[11]))
+cat(sprintf("  segment bounds: lower (%g, %g), upper (%g, %g)  ((-50, 0), (50, 0))\n",
+            r[12], r[13], r[14], r[15]))
+cat(sprintf("  broad phase: at most %g contacts during the fall (>= 1)\n", r[16]))

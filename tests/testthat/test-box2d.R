@@ -6,6 +6,24 @@ test_that("bundled Box2D builds and simulates a falling box", {
   expect_equal(r[4], 0.5, tolerance = 0.02)
 })
 
+# A polygon-segment collision in its stages (segment_checks()): narrow phase,
+# the segment's bounds, broad phase.
+test_that("Box2D: narrow phase, a box overlapping a segment has 2 contact points", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_equal(r[10], 2)
+  expect_lt(abs(r[11] - (-0.1)), 1e-3)               # the box's bottom 0.1 below the segment
+})
+
+test_that("Box2D: a segment shape's bounds", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_true(all(abs(r[12:15] - c(-50, 0, 50, 0)) < 0.1), info = paste(r[12:15], collapse = " "))
+})
+
+test_that("Box2D: broad phase, a box falling onto a segment gets a contact", {
+  r <- .Call(rltoolsR:::rlt_box2d_check)
+  expect_gte(r[16], 1)
+})
+
 # Step by step towards the lunar lander (src/env_box2d.cpp, drop_box()): each
 # drops a body from 10 m, stepped as the lander (50 Hz, 8 sub-steps). The first
 # that fails tells what does not collide.
