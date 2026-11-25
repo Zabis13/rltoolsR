@@ -492,10 +492,20 @@ b2AABB b2ComputeFatShapeAABB( const b2Shape* shape, b2WorldTransform xf, float e
 			return b2ComputeCircleFatAABB( &shape->circle, xf, extra );
 		case b2_polygonShape:
 			return b2ComputePolygonFatAABB( &shape->polygon, xf, extra );
+		// rltoolsR: copy the segment to a local before computing. On Linux CI (gcc 15.2,
+		// Ubuntu 26.04) the AABB read through &shape->segment came out as garbage
+		// ((2500, 0)-(0, 0) for (-50, 0)-(50, 0)) while the same segment from the stack was
+		// right; test-box2d.R checks both.
 		case b2_segmentShape:
-			return b2ComputeSegmentFatAABB( &shape->segment, xf, extra );
+		{
+			b2Segment segment = shape->segment;
+			return b2ComputeSegmentFatAABB( &segment, xf, extra );
+		}
 		case b2_chainSegmentShape:
-			return b2ComputeSegmentFatAABB( &shape->chainSegment.segment, xf, extra );
+		{
+			b2Segment segment = shape->chainSegment.segment;
+			return b2ComputeSegmentFatAABB( &segment, xf, extra );
+		}
 		default:
 		{
 			B2_ASSERT( false );
