@@ -5,6 +5,7 @@
 * Resident PPO rollout (`rl_ppo(rollout = "resident")`) also for the toy_text environments, with the truncation bootstrap computed on the device.
 * Resident PPO rollout for `rl_gpu_env("cartpole", device = "gpu")`: physics, termination, truncation and resets on the device.
 * Resident PPO rollout for `rl_gpu_env("pendulum_gym" / "pendulum_gym_raw", device = "gpu")` with box actions (Gaussian policy).
+* `rl_ppo(normalize_obs = TRUE)` with the default `rollout = "auto"` now picks the resident rollout where one exists (it normalizes observations on the device); before, it fell back to the host loop. `rollout = "host"` keeps the old behaviour.
 * GPU `cube` keeps its state as a 3-d tensor, without reshapes in the step graph.
 
 # rltoolsR 0.1.4

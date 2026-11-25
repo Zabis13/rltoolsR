@@ -5,9 +5,16 @@
 \alias{rl_ppo_act}
 \title{Choose actions with a trained policy}
 \usage{
-rl_act(model, obs, legal = NULL, greedy = TRUE)
+rl_act(model, obs, legal = NULL, greedy = TRUE, state = NULL, starts = NULL)
 
-rl_ppo_act(model, obs, legal = NULL, greedy = TRUE)
+rl_ppo_act(
+  model,
+  obs,
+  legal = NULL,
+  greedy = TRUE,
+  state = NULL,
+  starts = NULL
+)
 }
 \arguments{
 \item{model}{Result of [rl_ppo_train()] or [rl_load_model()].}
@@ -19,9 +26,20 @@ rl_ppo_act(model, obs, legal = NULL, greedy = TRUE)
 Ignored for continuous actions.}
 
 \item{greedy}{`TRUE` for the most likely (legal) action, `FALSE` to sample.}
+
+\item{state}{Recurrent models ([rl_ppo_recurrent()]) only: the LSTM state
+returned by the previous call, `list(h, c)` (`hidden x` copies), or `NULL`
+(zeros) at the start.}
+
+\item{starts}{Recurrent models only: `TRUE` for the copies whose episode
+starts with `obs` (e.g. `terminated | truncated` of the previous step of a
+vectorized environment, which resets in the same step); their state is
+zeroed first.}
 }
 \value{
 Discrete actions: integer vector of actions (`0`-based).
+  Recurrent models: `list(action, state)`, the actions and the state to pass
+  to the next call.
   Continuous actions: `n x act_dim` matrix clipped to the action space.
 }
 \description{

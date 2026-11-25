@@ -86,7 +86,11 @@ test_that("the path is chosen from the environment and the settings", {
   expect_identical(path_of(collect_once(rl_ppo(n_steps = 4))), "resident")
   expect_identical(path_of(collect_once(rl_ppo(n_steps = 4, rollout = "host"))), "device")
   expect_identical(path_of(collect_once(rl_ppo(n_steps = 4, capture = FALSE))), "host")
-  expect_identical(path_of(collect_once(rl_ppo(n_steps = 4, normalize_obs = TRUE))), "host")
+  # the resident path normalizes observations itself (5eef628), so "auto" keeps it;
+  # rollout = "host" with observation statistics stays on the R loop
+  expect_identical(path_of(collect_once(rl_ppo(n_steps = 4, normalize_obs = TRUE))), "resident")
+  expect_identical(path_of(collect_once(rl_ppo(n_steps = 4, normalize_obs = TRUE,
+                                               rollout = "host"))), "host")
   expect_false("obs_device" %in% names(collect_once(rl_ppo(n_steps = 4, rollout = "host"))$info))
   # a CPU environment: matrices, the host path
   set.seed(1L)

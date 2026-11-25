@@ -194,6 +194,13 @@ policy_value_buf <- function(net, buf, idx, cache, id) {
 #' @param legal Optional logical matrix of legal actions (same rows as `obs`).
 #'   Ignored for continuous actions.
 #' @param greedy `TRUE` for the most likely (legal) action, `FALSE` to sample.
+#' @param state Recurrent models ([rl_ppo_recurrent()]) only: the LSTM state
+#'   returned by the previous call, `list(h, c)` (`hidden x` copies), or `NULL`
+#'   (zeros) at the start.
+#' @param starts Recurrent models only: `TRUE` for the copies whose episode
+#'   starts with `obs` (e.g. `terminated | truncated` of the previous step of a
+#'   vectorized environment, which resets in the same step); their state is
+#'   zeroed first.
 #' @details Observations are normalized with the statistics frozen in the
 #'   model metadata when the model was trained with `normalize_obs`.
 #'
@@ -214,6 +221,8 @@ policy_value_buf <- function(net, buf, idx, cache, id) {
 #'
 #'   `rl_ppo_act()` is a deprecated alias kept for compatibility.
 #' @return Discrete actions: integer vector of actions (`0`-based).
+#'   Recurrent models: `list(action, state)`, the actions and the state to pass
+#'   to the next call.
 #'   Continuous actions: `n x act_dim` matrix clipped to the action space.
 #' @export
 #' @examples
@@ -224,8 +233,12 @@ policy_value_buf <- function(net, buf, idx, cache, id) {
 #' obs <- rl_reset(g)
 #' rl_act(m, obs, rl_legal_actions(g))
 #' }
-rl_act <- function(model, obs, legal = NULL, greedy = TRUE) {
+rl_act <- function(model, obs, legal = NULL, greedy = TRUE, state = NULL, starts = NULL) {
   obs <- obs_host(obs)
+  if (identical(model$meta$net_arch, "lstm"))
+    return(ppo_rec_act_model(model, obs, legal, greedy, state, starts))
+  if (!is.null(state) || !is.null(starts))
+    stop("rl_act(): state and starts are for recurrent models only", call. = FALSE)
   a <- policy_act_host(model, obs, legal, greedy)
   if (!is.null(a)) return(a)
   with_policy_modes(model, {
@@ -283,6 +296,7 @@ policy_act_host <- function(model, obs, legal, greedy) {
 # [., B] matrices; NULL when a parameter is not a host matrix or the net is
 # not one of ppo_net / ppo_net_shared / ppo_box_net.
 policy_forward_host <- function(model, x) {
+  if (identical(model$meta$net_arch, "lstm")) return(NULL)
   p <- lapply(model$net$parameters(), function(t) t$data)
   if (!all(vapply(p, function(m) is.matrix(m) && is.double(m), NA))) return(NULL)
   meta <- model$meta
@@ -342,6 +356,9 @@ with_policy_modes <- function(model, expr) {
 policy_dist <- function(model, obs, legal = NULL) {
   obs <- obs_host(obs)
   meta <- model$meta
+  if (identical(meta$net_arch, "lstm"))
+    stop("a recurrent model acts step by step with its state: use rl_act(model, obs, state = )",
+         call. = FALSE)
   norm <- if (isTRUE(meta$normalize_obs)) meta$obs_norm
   # one captured launch; the outputs come back as small matrices, and the
   # action is picked from them on the host
@@ -425,7 +442,11 @@ rl_ppo_act <- rl_act
 #'   snapshot then runs in the same recording); the games then live in
 #'   the collection's own device buffers and `env` itself is not stepped (it
 #'   gives the specification). Truncated episodes are bootstrapped with the
-#'   value of the final observation, as on the host path. `"host"`: a loop in R, one step of the environment per
+#'   value of the final observation, as on the host path. `normalize_obs`
+#'   works here too: the recordings normalize observations with the running
+#'   statistics, and the moments of each rollout are taken on the device
+#'   (f32) before they are merged into those statistics, so the numbers can
+#'   differ from the host path within f32 rounding. `"host"`: a loop in R, one step of the environment per
 #'   iteration. `"auto"` (the default) picks `"resident"` when possible. The
 #'   C++ cartpole and pendulum (`rl_env("cartpole")`, `rl_vec_env("cartpole")`,
 #'   `"pendulum_gym"`, `"pendulum_gym_raw"`, f64) run
@@ -655,7 +676,9 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
       b_act <- matrix(0L, n_env, n_t)
       b_legal <- array(0, c(meta$n_actions, n_env, n_t))
     }
-    b_logp <- b_val <- b_rew <- b_done <- b_ret <- matrix(0, n_env, n_t)
+    # b_term: episode ended without a bootstrap; b_trunc / b_nv: truncated with
+    # final_obs, and V(final_obs) there (GAE bootstraps it, see ppo_advantages)
+    b_logp <- b_val <- b_rew <- b_term <- b_trunc <- b_nv <- b_ret <- matrix(0, n_env, n_t)
     n_done <- 0
     tk <- prof_start()
     for (t in seq_len(n_t)) {
@@ -729,9 +752,11 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         fin <- matrix(0, obs_dim, n_env)
         fin[, seq_len(sum(trunc))] <- t(r$final_obs[trunc, , drop = FALSE])
         v_fin <- as.numeric(policy_forward(net, fin, norm)$value)[seq_len(sum(trunc))]
-        b_rew[trunc, t] <- b_rew[trunc, t] + gamma * turn_sign * v_fin
+        b_trunc[trunc, t] <- 1
+        b_nv[trunc, t] <- v_fin
       }
-      b_done[, t] <- as.numeric(done)
+      # without final_obs a truncation stays a terminal step (no bootstrap)
+      b_term[, t] <- as.numeric(done) - b_trunc[, t]
       n_done <- n_done + sum(done)
       if (fsp) {
         # reward is for the side that just moved
@@ -759,7 +784,8 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
     }
     tk <- prof_tick(tk, "collect: bootstrap")
 
-    adv <- ppo_gae(b_rew, b_val, b_done, last_val, gamma, lambda, turn_sign)
+    adv <- ppo_advantages(b_rew, b_val, b_term, b_trunc, b_nv, last_val, gamma, lambda,
+                          turn_sign)
     ret <- adv + b_val
 
     N <- n_env * n_t
@@ -832,9 +858,10 @@ rl_ppo <- function(n_steps = 9, epochs = 4, minibatch = 2048, lr = 1e-3,
         b_rew[, t] <- scale_reward(b_rew[, t], state$rew_rms, epsilon, clip_reward)
       }
     }
-    # truncation bootstrap after scaling, as on the host path
-    b_rew <- b_rew + r$boot
-    adv <- ppo_gae(b_rew, r$val, r$done, r$last_val, gamma, lambda, state$turn_sign)
+    # truncated games (trunc excludes terminated) bootstrap V(final_obs) in GAE
+    adv <- ppo_advantages(b_rew, r$val, round(r$done - r$trunc), round(r$trunc),
+                          r$next_val, r$last_val,
+                          gamma, lambda, state$turn_sign)
     N <- n_env * n_steps
     state$rollout <- list(obs = NULL, cols = seq_len(N) - 1,
                           act = if (state$box) r$act else as.integer(round(as.numeric(r$act))),
@@ -996,8 +1023,14 @@ ppo_build <- function(meta) {
     ppo_box_net(meta$obs_dim, meta$act_dim, meta$hidden)
   } else if (identical(meta$net_arch, "separate")) {
     ppo_net(meta$obs_dim, meta$n_actions, meta$hidden)
-  } else {
+  } else if (identical(meta$net_arch, "lstm")) {
+    ppo_lstm_net(meta$obs_dim, meta$n_actions, meta$hidden, if (is.null(meta$lstm_init)) "rl" else meta$lstm_init)
+  } else if (is.null(meta$net_arch) || identical(meta$net_arch, "shared")) {
+    # files written before meta$net_arch (rltoolsR <= 0.1.1); "shared" names it
     ppo_net_shared(meta$obs_dim, meta$n_actions, meta$hidden)
+  } else {
+    stop("unknown PPO network architecture '", format(meta$net_arch),
+         "' (written by a newer rltoolsR?)", call. = FALSE)
   }
 }
 
@@ -1211,6 +1244,21 @@ ppo_update_captured <- function(state, obs, legal, act, old_logp, adv, ret,
   l <- c(pg = out$pg[1], vf = out$vf[1], ent = ent)
   if (!is.null(out$grad_norm)) l <- c(l, grad_norm = out$grad_norm[1])
   l
+}
+
+# Advantages over [n_env, n_t] rollouts: b_term ends an episode with value 0,
+# b_trunc ends it with the bootstrap b_nv = V(final_obs). ggmlR's ag_gae() when
+# the installed ggmlR has it, else ppo_gae() with the bootstrap folded into the
+# reward (Stable-Baselines3's form; the same advantages, see ggmlR's
+# test-ag-rl-returns.R). Drop the fallback once DESCRIPTION requires a ggmlR
+# with ag_gae().
+ppo_advantages <- function(b_rew, b_val, b_term, b_trunc, b_nv, last_val, gamma, lambda,
+                           turn_sign) {
+  if (!length(ggmlr_missing("ag_gae")))
+    return(t(ag_gae(t(b_rew), t(b_val), t(b_term), t(b_trunc), t(b_nv), last_val,
+                    gamma, lambda, turn_sign)$advantages))
+  ppo_gae(b_rew + gamma * turn_sign * b_trunc * b_nv, b_val, b_term + b_trunc,
+          last_val, gamma, lambda, turn_sign)
 }
 
 # GAE over [n_env, n_t] rollouts; the value of the next state is from the

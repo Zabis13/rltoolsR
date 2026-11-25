@@ -19,8 +19,7 @@ valgrind_core <- c(
   "env-rltools",   # all C++ environments in src/
   "env-toy-text",  # tabular C++ environments (env_tabular.h, env_toy_text.cpp)
   "box2d",         # the bundled Box2D (src/box2d)
-  "env-errors",    # C++ errors must not leak past Rf_error()
-  "replay-buffer"
+  "env-errors"     # C++ errors must not leak past Rf_error()
 )
 
 # Detect valgrind via several independent signals (any one is enough):

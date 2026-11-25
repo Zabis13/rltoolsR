@@ -28,7 +28,8 @@ test_that("the resident rollout equals a host loop on the same keys", {
   for (round in 1:2) {
     key <- c(stats::runif(1), floor(stats::runif(1) * 4096) / 4096)
     r <- rltoolsR:::ppo_res_rollout(cap, ad, n, ns, key)
-    expect_identical(r$boot, matrix(0, n, ns))         # tic-tac-toe never truncates
+    expect_identical(r$trunc, matrix(0, n, ns))        # tic-tac-toe never truncates
+    expect_identical(r$next_val, matrix(0, n, ns))
     h_obs <- h_legal <- NULL
     h <- list(act = NULL, logp = NULL, val = NULL, rew = NULL, done = NULL)
     for (t in seq_len(ns)) {
@@ -78,7 +79,7 @@ test_that("rl_ppo picks the resident rollout and trains on it", {
 # Tabular adapter (R/resident_tabular.R): frozen_lake_det_onehot against rl_env
 # singles and policy_act() with the same keys. Every game starts 95 steps into
 # its episode, so all games still running reach the 100-step limit within the
-# rollout: the truncation bootstrap gamma * V(final obs) is checked too.
+# rollout: the truncation rows (trunc, next_val = V(final obs)) are checked too.
 test_that("the resident tabular rollout equals a host loop, truncation included", {
   skip_if_not(has_vk_rr(), "no Vulkan device")
   on.exit(ag_device("cpu"), add = TRUE)
@@ -108,26 +109,29 @@ test_that("the resident tabular rollout equals a host loop, truncation included"
   obs <- matrix(0, 16, n); obs[1, ] <- 1
   key <- c(stats::runif(1), floor(stats::runif(1) * 4096) / 4096)
   r <- rltoolsR:::ppo_res_rollout(cap, ad, n, ns, key)
-  h <- list(act = NULL, rew = NULL, done = NULL, boot = NULL)
+  h <- list(act = NULL, rew = NULL, done = NULL, trunc = NULL, next_val = NULL)
   for (t in seq_len(ns)) {
     o <- rltoolsR:::policy_act(net, obs, NULL, matrix(1, 4, n), key = c(key[1], key[2] + t - 1))
     s <- lapply(seq_len(n), function(i) rl_step(singles[[i]], o$a[i]))
     fin <- vapply(s, function(x) x$obs, numeric(16))
-    trunc <- vapply(s, `[[`, NA, "truncated")
-    done <- trunc | vapply(s, `[[`, NA, "terminated")
+    term <- vapply(s, `[[`, NA, "terminated")
+    trunc <- vapply(s, `[[`, NA, "truncated") & !term
+    done <- trunc | term
     v_fin <- as.numeric(rltoolsR:::policy_forward(net, fin)$value)
     h$act <- cbind(h$act, o$a)
     h$rew <- cbind(h$rew, vapply(s, `[[`, 0, "reward"))
     h$done <- cbind(h$done, done * 1)
-    h$boot <- cbind(h$boot, gamma * trunc * v_fin)
+    h$trunc <- cbind(h$trunc, trunc * 1)
+    h$next_val <- cbind(h$next_val, trunc * v_fin)
     for (i in which(done)) fin[, i] <- rl_reset(singles[[i]])
     obs <- fin
   }
   expect_identical(r$act, h$act + 0)
   expect_identical(r$rew, h$rew)
   expect_identical(r$done, h$done)
-  expect_equal(r$boot, h$boot, tolerance = 1e-5)
-  expect_gt(sum(h$boot != 0), 0)                       # truncations happened
+  expect_identical(r$trunc, h$trunc)
+  expect_equal(r$next_val, h$next_val, tolerance = 1e-5)
+  expect_gt(sum(h$trunc), 0)                           # truncations happened
   expect_identical(r$legal, matrix(1, 4, n * ns))
 })
 

@@ -5,10 +5,12 @@
 # t * n_env + i of the rollout buffers:
 #   obs_buf   [obs_dim, N]    observations, read by the update (as on the device path)
 #   res_legal [n_actions, N]  legal actions (environments with a legal mask only)
-#   res_rec   [6, N]          action, log-probability, value, reward, done, boot
-# and t <- t + 1. boot is gamma * V(final observation) for truncated games, 0
-# otherwise; the host adds it to the reward after reward scaling, as the host
-# path does. After the rollout the bootstrap value is one more small recording,
+#   res_rec   [7, N]          action, log-probability, value, reward, done, trunc,
+#                             next_val
+# and t <- t + 1. trunc is 1 for truncated games (never for terminated ones),
+# next_val = trunc * V(final observation); the host passes both to GAE, which
+# bootstraps V(final observation) there. After the rollout the bootstrap value
+# is one more small recording,
 # then res_rec (and res_legal) come down; GAE runs on the host.
 #
 # The games live in the collection's own ag_buffers, built by an adapter, not
@@ -197,7 +199,7 @@ ppo_res_setup <- function(net, cap, ad, n_env, n_steps, gamma, clip_obs = NULL,
   if (ad$legal) cap$res_legal <- ag_buffer(ad$n_actions, N)
   box <- isTRUE(ad$box)
   fsp <- !is.null(opp)
-  cap$res_rec <- ag_buffer(ppo_res_act_rows(ad) + 5L + if (fsp) 3L else 0L, N)
+  cap$res_rec <- ag_buffer(ppo_res_act_rows(ad) + 6L + if (fsp) 3L else 0L, N)
   cap$res_cnt <- ag_buffer(1, 1)
   e2 <- ag_tensor(matrix(c(0, 1), 2, 1))
   one <- ag_tensor(matrix(1, 1, 1))
@@ -269,12 +271,13 @@ ppo_res_setup <- function(net, cap, ad, n_env, n_steps, gamma, clip_obs = NULL,
       out <- f$out
     } else out <- body(h, pen, kt)
     r <- ad$step(rs, out$a, cols, kt, s)
-    boot <- if (is.null(r$truncated)) zero_n else
-      ag_scale(ag_mul(r$truncated, net$forward(nz(r$final_obs, m, sc))$value), gamma)
+    trunc <- if (is.null(r$truncated)) zero_n else r$truncated
+    next_val <- if (is.null(r$truncated)) zero_n else
+      ag_mul(r$truncated, net$forward(nz(r$final_obs, m, sc))$value)
     ag_set_rows(cap$obs_buf, idx, s$obs)
     if (ad$legal) ag_set_rows(cap$res_legal, idx, s$legal)
     rec <- ag_concat_rows(ag_concat_rows(ag_concat_rows(ag_concat_rows(ag_concat_rows(
-      out$a, out$logp), out$value), r$reward), r$done), boot)
+      ag_concat_rows(out$a, out$logp), out$value), r$reward), r$done), trunc), next_val)
     if (fsp) rec <- ag_concat_rows(rec, fsp_next(f, r$done, kt, cols))
     ag_set_rows(cap$res_rec, idx, rec)
     ag_set_rows(cap$res_cnt, z, ag_add(t, one))
@@ -316,7 +319,7 @@ ppo_res_moments <- function(cap, N, keep = seq_len(N) - 1) {
 }
 
 # One rollout. Returns the [n_env, n_steps] matrices the host path builds
-# (boot: the truncation bootstrap, added to rew after scaling), plus the
+# (trunc: truncated games, next_val: V(final observation) there), plus the
 # legal-action matrix [n_actions, N] (NULL for box actions; act is then
 # [act_dim, N]) and the bootstrap value. `norm` (obs_norm_meta()) when the
 # recordings normalize observations; the caller then takes the moments of the
@@ -345,8 +348,9 @@ ppo_res_rollout <- function(cap, ad, n_env, n_steps, key = ppo_res_key(), norm =
   act <- if (box) rec[seq_len(ar), , drop = FALSE] else matrix(rec[1L, ], n_env, n_steps)
   logp <- m(1)
   if (box) logp <- logp - 0.5 * ar * log(2 * pi)
-  fsp <- nrow(rec) > ar + 5L
-  list(act = act, logp = logp, val = m(2), rew = m(3), done = m(4), boot = m(5),
-       keep = if (fsp) m(6), vs_pool = if (fsp) m(7), side = if (fsp) m(8),
+  fsp <- nrow(rec) > ar + 6L
+  list(act = act, logp = logp, val = m(2), rew = m(3), done = m(4), trunc = m(5),
+       next_val = m(6),
+       keep = if (fsp) m(7), vs_pool = if (fsp) m(8), side = if (fsp) m(9),
        legal = legal, last_val = last_val)
 }

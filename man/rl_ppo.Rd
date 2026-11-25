@@ -95,7 +95,11 @@ environment (`rl_vec_env("frozen_lake...")`, `"cliff_walking..."`,
 snapshot then runs in the same recording); the games then live in
 the collection's own device buffers and `env` itself is not stepped (it
 gives the specification). Truncated episodes are bootstrapped with the
-value of the final observation, as on the host path. `"host"`: a loop in R, one step of the environment per
+value of the final observation, as on the host path. `normalize_obs`
+works here too: the recordings normalize observations with the running
+statistics, and the moments of each rollout are taken on the device
+(f32) before they are merged into those statistics, so the numbers can
+differ from the host path within f32 rounding. `"host"`: a loop in R, one step of the environment per
 iteration. `"auto"` (the default) picks `"resident"` when possible. The
 C++ cartpole and pendulum (`rl_env("cartpole")`, `rl_vec_env("cartpole")`,
 `"pendulum_gym"`, `"pendulum_gym_raw"`, f64) run

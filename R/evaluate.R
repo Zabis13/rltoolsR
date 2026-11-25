@@ -93,6 +93,9 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
   if (length(max_steps) != 1L || is.na(max_steps) || max_steps < 1)
     stop("rl_evaluate(): the environment has no step limit, set `max_steps`", call. = FALSE)
   discrete <- !identical(model$meta$action_type, "box")
+  recurrent <- identical(model$meta$net_arch, "lstm")
+  if (recurrent && !greedy)
+    stop("rl_evaluate(): a recurrent model is evaluated greedily only", call. = FALSE)
 
   if (!greedy) {
     # seed = NULL: the streams follow the caller's RNG, drawn before it is saved
@@ -114,11 +117,17 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
     tr_b <- logical(n)
     done <- seq_len(n) > k                   # copies beyond the last slot
     t <- 0L
+    rstate <- NULL                           # recurrent models: LSTM state, starts
+    rstarts <- NULL
     while (!all(done) && t < max_steps) {
       t <- t + 1L
       legal <- if (discrete) rl_legal_actions(env)
       live <- !done
-      act <- if (greedy) {
+      act <- if (recurrent) {
+        ra <- rl_act(model, obs, legal, greedy = TRUE, state = rstate, starts = rstarts)
+        rstate <- ra$state
+        ra$action
+      } else if (greedy) {
         rl_act(model, obs, legal, greedy = TRUE)
       } else {
         # one batched forward, then each live slot samples on the host
@@ -134,6 +143,7 @@ rl_evaluate <- function(model, env, n_episodes = 10, max_steps = NULL,
       l_b[live] <- l_b[live] + 1L
       tr_b <- tr_b | (live & res$truncated & !res$terminated)
       done <- done | res$terminated | res$truncated
+      rstarts <- res$terminated | res$truncated
       obs <- res$obs
     }
     tr_b[!done] <- TRUE                      # cut by `max_steps`
